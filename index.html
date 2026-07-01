@@ -1,0 +1,313 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta
+      name="description"
+      content="MineModVulnIndexer is a passive security and dependency analysis tool for Minecraft mods and modpacks."
+    />
+    <title>MineModVulnIndexer</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        --bg: #08110d;
+        --panel: #0f1b15;
+        --text: #eff8f1;
+        --muted: #abc0b1;
+        --line: rgba(239, 248, 241, 0.16);
+        --accent: #53d982;
+        --accent-soft: rgba(83, 217, 130, 0.16);
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        min-height: 100vh;
+        background:
+          radial-gradient(circle at 80% 10%, rgba(83, 217, 130, 0.18), transparent 32rem),
+          linear-gradient(135deg, #08110d 0%, #0a1510 52%, #101912 100%);
+        color: var(--text);
+        font-family:
+          Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        line-height: 1.5;
+      }
+
+      a {
+        color: inherit;
+      }
+
+      .page {
+        min-height: 100vh;
+        overflow: hidden;
+      }
+
+      .hero {
+        display: grid;
+        min-height: 100svh;
+        grid-template-columns: minmax(0, 1.08fr) minmax(18rem, 0.72fr);
+        gap: clamp(2rem, 6vw, 6rem);
+        align-items: center;
+        width: min(1120px, calc(100% - 2rem));
+        margin: 0 auto;
+        padding: clamp(2rem, 7vw, 6rem) 0;
+      }
+
+      .eyebrow {
+        width: fit-content;
+        margin: 0 0 1.25rem;
+        padding: 0.42rem 0.7rem;
+        border: 1px solid var(--line);
+        border-radius: 999px;
+        background: var(--accent-soft);
+        color: #b9f3cc;
+        font-size: 0.78rem;
+        font-weight: 700;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        animation: rise 650ms ease both;
+      }
+
+      h1 {
+        max-width: 12ch;
+        margin: 0;
+        font-size: clamp(3.4rem, 11vw, 8.4rem);
+        line-height: 0.88;
+        letter-spacing: 0;
+        animation: rise 750ms 80ms ease both;
+      }
+
+      .summary {
+        max-width: 42rem;
+        margin: 1.7rem 0 0;
+        color: var(--muted);
+        font-size: clamp(1.05rem, 2vw, 1.35rem);
+        animation: rise 750ms 160ms ease both;
+      }
+
+      .actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.8rem;
+        margin-top: 2.1rem;
+        animation: rise 750ms 240ms ease both;
+      }
+
+      .button {
+        display: inline-flex;
+        min-height: 2.9rem;
+        align-items: center;
+        justify-content: center;
+        border-radius: 999px;
+        padding: 0.8rem 1.1rem;
+        border: 1px solid var(--line);
+        text-decoration: none;
+        font-weight: 700;
+        transition:
+          transform 180ms ease,
+          border-color 180ms ease,
+          background 180ms ease;
+      }
+
+      .button.primary {
+        background: var(--accent);
+        color: #06110b;
+        border-color: transparent;
+      }
+
+      .button:hover {
+        transform: translateY(-2px);
+        border-color: rgba(83, 217, 130, 0.7);
+      }
+
+      .visual {
+        position: relative;
+        min-height: 30rem;
+        border-left: 1px solid var(--line);
+        padding-left: clamp(1.2rem, 3vw, 2rem);
+        animation: fade 900ms 220ms ease both;
+      }
+
+      .terminal {
+        margin-top: 4rem;
+        border: 1px solid var(--line);
+        background: rgba(5, 12, 8, 0.72);
+        box-shadow: 0 2rem 7rem rgba(0, 0, 0, 0.34);
+      }
+
+      .terminal-bar {
+        display: flex;
+        gap: 0.45rem;
+        padding: 0.75rem;
+        border-bottom: 1px solid var(--line);
+      }
+
+      .dot {
+        width: 0.62rem;
+        height: 0.62rem;
+        border-radius: 50%;
+        background: var(--accent);
+        opacity: 0.75;
+      }
+
+      pre {
+        margin: 0;
+        padding: 1.2rem;
+        overflow: auto;
+        color: #d7ffe2;
+        font: 0.9rem/1.7 "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+      }
+
+      .sections {
+        width: min(1120px, calc(100% - 2rem));
+        margin: 0 auto;
+        padding: 0 0 4rem;
+      }
+
+      .section {
+        display: grid;
+        grid-template-columns: 0.6fr 1fr;
+        gap: clamp(1.2rem, 4vw, 4rem);
+        padding: clamp(2rem, 5vw, 4rem) 0;
+        border-top: 1px solid var(--line);
+      }
+
+      h2 {
+        margin: 0;
+        font-size: clamp(1.6rem, 3vw, 2.4rem);
+      }
+
+      .section p {
+        margin: 0;
+        color: var(--muted);
+        font-size: 1.06rem;
+      }
+
+      ul {
+        display: grid;
+        gap: 0.85rem;
+        margin: 0;
+        padding: 0;
+        list-style: none;
+      }
+
+      li {
+        padding-left: 1.15rem;
+        border-left: 2px solid var(--accent);
+        color: var(--muted);
+      }
+
+      @keyframes rise {
+        from {
+          opacity: 0;
+          transform: translateY(18px);
+        }
+        to {
+          opacity: 1;
+          transform: translateY(0);
+        }
+      }
+
+      @keyframes fade {
+        from {
+          opacity: 0;
+          transform: scale(0.98);
+        }
+        to {
+          opacity: 1;
+          transform: scale(1);
+        }
+      }
+
+      @media (max-width: 820px) {
+        .hero,
+        .section {
+          grid-template-columns: 1fr;
+        }
+
+        .hero {
+          min-height: auto;
+        }
+
+        .visual {
+          min-height: auto;
+          border-left: 0;
+          padding-left: 0;
+        }
+
+        .terminal {
+          margin-top: 1rem;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main class="page">
+      <section class="hero" aria-labelledby="title">
+        <div>
+          <p class="eyebrow">Passive Minecraft mod security analysis</p>
+          <h1 id="title">MineMod VulnIndexer</h1>
+          <p class="summary">
+            MineModVulnIndexer retrieves public CurseForge metadata, resolves official
+            source repositories, and correlates documented security fixes with modpack
+            releases.
+          </p>
+          <div class="actions" aria-label="Project links">
+            <a class="button primary" href="https://github.com/faton5/minemod-vuln-indexer">
+              View on GitHub
+            </a>
+            <a class="button" href="#safety">Safety scope</a>
+          </div>
+        </div>
+
+        <div class="visual" aria-label="Example command output">
+          <div class="terminal">
+            <div class="terminal-bar" aria-hidden="true">
+              <span class="dot"></span>
+              <span class="dot"></span>
+              <span class="dot"></span>
+            </div>
+            <pre><code>$ minemod-audit run --limit-mods 20
+collecting CurseForge metadata
+resolving source repositories
+indexing public modpack manifests
+writing JSON, CSV and Markdown reports</code></pre>
+          </div>
+        </div>
+      </section>
+
+      <div class="sections">
+        <section class="section" aria-labelledby="objectives">
+          <h2 id="objectives">Objectives</h2>
+          <ul>
+            <li>Retrieve public CurseForge metadata.</li>
+            <li>Identify official source repositories.</li>
+            <li>Collect publicly documented CVEs, GHSAs and security fixes.</li>
+            <li>Correlate affected mod versions with public modpack releases.</li>
+            <li>Generate JSON, CSV and Markdown reports.</li>
+          </ul>
+        </section>
+
+        <section class="section" id="safety" aria-labelledby="safety-title">
+          <h2 id="safety-title">Safety Scope</h2>
+          <p>
+            This project does not scan Minecraft servers, connect to multiplayer
+            servers, execute proof-of-concepts or exploit third-party systems. It does
+            not mirror or redistribute mod files.
+          </p>
+        </section>
+
+        <section class="section" aria-labelledby="status">
+          <h2 id="status">Status</h2>
+          <p>
+            Initial development and API integration. The current implementation is a
+            passive MVP designed for local API-key based collection and report generation.
+          </p>
+        </section>
+      </div>
+    </main>
+  </body>
+</html>
