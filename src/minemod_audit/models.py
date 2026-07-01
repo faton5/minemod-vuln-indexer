@@ -52,7 +52,9 @@ class VulnerabilityStatus(StrEnum):
 class ModProject(BaseModel):
     model_config = ConfigDict(extra="allow")
 
-    project_id: int
+    project_id: int | str
+    provider: str | None = None
+    provider_project_id: str | None = None
     name: str
     slug: str
     authors: list[str] = Field(default_factory=list)
@@ -70,7 +72,7 @@ class ModProject(BaseModel):
 
 
 class RepositoryResolution(BaseModel):
-    mod_project_id: int
+    mod_project_id: int | str
     mod_name: str
     repository: str | None
     confidence: int
@@ -81,7 +83,7 @@ class RepositoryResolution(BaseModel):
 
 class Vulnerability(BaseModel):
     internal_id: str
-    mod_project_id: int
+    mod_project_id: int | str
     mod_name: str
     repository: str | None = None
     title: str
@@ -110,15 +112,17 @@ class Vulnerability(BaseModel):
 
 
 class Modpack(BaseModel):
-    project_id: int
+    project_id: int | str
+    provider: str | None = None
+    provider_project_id: str | None = None
     name: str
     slug: str
     download_count: int = 0
 
 
 class ModpackRelease(BaseModel):
-    file_id: int
-    modpack_project_id: int
+    file_id: int | str
+    modpack_project_id: int | str
     display_name: str
     release_date: str | None = None
     minecraft_version: str | None = None
@@ -129,9 +133,9 @@ class ModpackRelease(BaseModel):
 
 
 class ModpackComponent(BaseModel):
-    modpack_file_id: int
-    mod_project_id: int
-    mod_file_id: int
+    modpack_file_id: int | str
+    mod_project_id: int | str
+    mod_file_id: int | str
     mod_name: str | None = None
     mod_version: str | None = None
     filename: str | None = None

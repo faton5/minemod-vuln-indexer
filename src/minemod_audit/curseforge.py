@@ -120,7 +120,7 @@ class CurseForgeClient:
             release_date=file_payload.get("fileDate"),
             download_url=None,
         )
-        download_url = self.get_download_url(modpack.project_id, file_id)
+        download_url = self.get_download_url(int(modpack.project_id), file_id)
         if not download_url:
             release.unresolved_reason = "download URL unavailable"
             return release, []

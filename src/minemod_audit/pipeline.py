@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import httpx
+
 from minemod_audit.advisories import (
     GitHubClient,
     NvdClient,
@@ -20,6 +22,14 @@ from minemod_audit.models import (
     SourceType,
     Vulnerability,
 )
+from minemod_audit.providers.base import (
+    ProviderDependency,
+    ProviderProject,
+    ProviderStatus,
+    ProviderVersion,
+)
+from minemod_audit.providers.dedupe import deduplicate_provider_projects
+from minemod_audit.providers.registry import ProviderRegistry
 from minemod_audit.reports import write_reports
 from minemod_audit.repository import RepositoryCandidate, resolve_repository
 from minemod_audit.versioning import VersionDecision, is_version_affected
@@ -38,20 +48,31 @@ class Pipeline:
         self.refresh = refresh
         self.store = DataStore(settings.database)
 
-    def collect_mods(self, *, limit: int) -> list[ModProject]:
-        if not self.settings.curseforge_api_key:
-            raise RuntimeError("CURSEFORGE_API_KEY is required for collect-mods")
-        client = CurseForgeClient(
-            api_key=self.settings.curseforge_api_key,
-            cache_directory=self.settings.cache_directory,
-            timeout_seconds=self.settings.timeout_seconds,
+    def provider_status(self) -> list[ProviderStatus]:
+        return ProviderRegistry(
+            self.settings,
             offline=self.offline,
             refresh=self.refresh,
+        ).status()
+
+    def collect_mods(self, *, limit: int, provider: str = "modrinth") -> list[ModProject]:
+        provider_projects = self._collect_provider_projects(
+            provider=provider,
+            project_type="mod",
+            limit=limit,
         )
-        try:
-            mods = client.collect_mods(limit=limit)
-        finally:
-            client.close()
+        deduped_projects = deduplicate_provider_projects(provider_projects)
+        mods = [self._mod_from_provider_project(group.primary) for group in deduped_projects]
+        self.store.replace_models(
+            "provider_projects",
+            provider_projects,
+            key=lambda item: f"{item.provider}:{item.provider_project_id}",
+        )
+        self.store.replace_models(
+            "provider_project_groups",
+            deduped_projects,
+            key=lambda item: f"{item.primary.provider}:{item.primary.provider_project_id}",
+        )
         self.store.replace_models("mods", mods, key=lambda item: str(item.project_id))
         return mods
 
@@ -162,8 +183,82 @@ class Pipeline:
         minecraft_version: str | None = None,
         loader: str | None = None,
     ) -> tuple[list[Modpack], list[ModpackRelease], list[ModpackComponent]]:
+        return self.index_curseforge_modpacks(
+            limit=limit,
+            releases_per_pack=releases_per_pack,
+            minecraft_version=minecraft_version,
+            loader=loader,
+        )
+
+    def collect_modpacks(
+        self,
+        *,
+        limit: int,
+        provider: str = "modrinth",
+    ) -> list[Modpack]:
+        provider_projects = self._collect_provider_projects(
+            provider=provider,
+            project_type="modpack",
+            limit=limit,
+        )
+        versions: list[ProviderVersion] = []
+        for project in provider_projects:
+            if project.provider != "modrinth":
+                continue
+            provider_client = ProviderRegistry(
+                self.settings,
+                offline=self.offline,
+                refresh=self.refresh,
+            ).build_provider(project.provider)
+            try:
+                versions.extend(provider_client.get_project_versions(project.provider_project_id))
+            finally:
+                provider_client.close()
+        deduped_projects = deduplicate_provider_projects(provider_projects)
+        modpacks = [
+            self._modpack_from_provider_project(group.primary) for group in deduped_projects
+        ]
+        releases = [self._release_from_provider_version(version) for version in versions]
+        components = [
+            self._component_from_provider_dependency(version, dependency)
+            for version in versions
+            for dependency in version.dependencies
+            if dependency.provider_project_id
+        ]
+        self.store.replace_models(
+            "provider_projects",
+            provider_projects,
+            key=lambda item: f"{item.provider}:{item.provider_project_id}",
+        )
+        self.store.replace_models(
+            "provider_project_groups",
+            deduped_projects,
+            key=lambda item: f"{item.primary.provider}:{item.primary.provider_project_id}",
+        )
+        self.store.replace_models(
+            "provider_versions",
+            versions,
+            key=lambda item: f"{item.provider}:{item.provider_version_id}",
+        )
+        self.store.replace_models("modpacks", modpacks, key=lambda item: str(item.project_id))
+        self.store.replace_models("modpack_releases", releases, key=lambda item: str(item.file_id))
+        self.store.replace_models(
+            "modpack_components",
+            components,
+            key=lambda item: f"{item.modpack_file_id}:{item.mod_project_id}:{item.mod_file_id}",
+        )
+        return modpacks
+
+    def index_curseforge_modpacks(
+        self,
+        *,
+        limit: int,
+        releases_per_pack: int,
+        minecraft_version: str | None = None,
+        loader: str | None = None,
+    ) -> tuple[list[Modpack], list[ModpackRelease], list[ModpackComponent]]:
         if not self.settings.curseforge_api_key:
-            raise RuntimeError("CURSEFORGE_API_KEY is required for index-modpacks")
+            return [], [], []
         client = CurseForgeClient(
             api_key=self.settings.curseforge_api_key,
             cache_directory=self.settings.cache_directory,
@@ -176,7 +271,7 @@ class Pipeline:
         try:
             modpacks = client.collect_modpacks(limit=limit, minecraft_version=minecraft_version)
             for modpack in modpacks:
-                files = client.get_files(modpack.project_id, page_size=releases_per_pack)
+                files = client.get_files(int(modpack.project_id), page_size=releases_per_pack)
                 for file_payload in files:
                     release, release_components = client.index_modpack_release(
                         modpack=modpack,
@@ -196,6 +291,88 @@ class Pipeline:
             key=lambda item: f"{item.modpack_file_id}:{item.mod_project_id}:{item.mod_file_id}",
         )
         return modpacks, releases, components
+
+    def _collect_provider_projects(
+        self,
+        *,
+        provider: str,
+        project_type: str,
+        limit: int,
+    ) -> list[ProviderProject]:
+        registry = ProviderRegistry(
+            self.settings,
+            offline=self.offline,
+            refresh=self.refresh,
+        )
+        provider_names = registry.enabled_provider_names(provider)
+        projects: list[ProviderProject] = []
+        for provider_name in provider_names:
+            client = registry.build_provider(provider_name)
+            try:
+                if project_type == "mod":
+                    projects.extend(client.list_popular_mods(limit=limit, offset=0))
+                else:
+                    projects.extend(client.list_popular_modpacks(limit=limit, offset=0))
+            except httpx.HTTPStatusError as exc:
+                if provider_name == "curseforge" and exc.response.status_code in {401, 403}:
+                    continue
+                raise
+            finally:
+                client.close()
+        return projects[:limit] if provider != "all" else projects
+
+    @staticmethod
+    def _mod_from_provider_project(project: ProviderProject) -> ModProject:
+        return ModProject(
+            project_id=f"{project.provider}:{project.provider_project_id}",
+            provider=project.provider,
+            provider_project_id=project.provider_project_id,
+            name=project.title,
+            slug=project.slug,
+            download_count=project.downloads,
+            source_url=project.source_url,
+            issues_url=project.issues_url,
+            website_url=project.website_url,
+            categories=project.loaders,
+            latest_versions=project.game_versions,
+            raw=project.raw_metadata,
+        )
+
+    @staticmethod
+    def _modpack_from_provider_project(project: ProviderProject) -> Modpack:
+        return Modpack(
+            project_id=f"{project.provider}:{project.provider_project_id}",
+            provider=project.provider,
+            provider_project_id=project.provider_project_id,
+            name=project.title,
+            slug=project.slug,
+            download_count=project.downloads,
+        )
+
+    @staticmethod
+    def _release_from_provider_version(version: ProviderVersion) -> ModpackRelease:
+        return ModpackRelease(
+            file_id=f"{version.provider}:{version.provider_version_id}",
+            modpack_project_id=f"{version.provider}:{version.provider_project_id}",
+            display_name=version.version_number,
+            release_date=version.publication_date,
+            minecraft_version=version.game_versions[0] if version.game_versions else None,
+            loader=version.loaders[0] if version.loaders else None,
+        )
+
+    @staticmethod
+    def _component_from_provider_dependency(
+        version: ProviderVersion,
+        dependency: ProviderDependency,
+    ) -> ModpackComponent:
+        provider_project_id = dependency.provider_project_id
+        provider_version_id = dependency.provider_version_id or provider_project_id
+        return ModpackComponent(
+            modpack_file_id=f"{version.provider}:{version.provider_version_id}",
+            mod_project_id=f"{version.provider}:{provider_project_id}",
+            mod_file_id=f"{version.provider}:{provider_version_id}",
+            required=dependency.dependency_type == "required",
+        )
 
     def correlate(self) -> list[Finding]:
         vulnerabilities = self.store.load_models("vulnerabilities", Vulnerability)

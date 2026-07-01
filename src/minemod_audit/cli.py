@@ -7,6 +7,8 @@ from minemod_audit.config import load_settings
 from minemod_audit.pipeline import Pipeline
 
 app = typer.Typer(no_args_is_help=True)
+providers_app = typer.Typer(no_args_is_help=True)
+app.add_typer(providers_app, name="providers")
 
 
 DatabaseOption = Annotated[Path | None, typer.Option("--database")]
@@ -31,6 +33,7 @@ def _pipeline(
 @app.command("collect-mods")
 def collect_mods(
     limit: Annotated[int, typer.Option("--limit", min=1)] = 20,
+    provider: Annotated[str, typer.Option("--provider")] = "modrinth",
     database: DatabaseOption = None,
     output_directory: OutputOption = None,
     resume: ResumeOption = False,
@@ -40,8 +43,40 @@ def collect_mods(
 ) -> None:
     del resume
     pipeline = _pipeline(database, output_directory, offline, refresh, verbose)
-    mods = pipeline.collect_mods(limit=limit)
+    mods = pipeline.collect_mods(limit=limit, provider=provider)
     typer.echo(f"Collected {len(mods)} mods")
+
+
+@app.command("collect-modpacks")
+def collect_modpacks(
+    limit: Annotated[int, typer.Option("--limit", min=1)] = 100,
+    provider: Annotated[str, typer.Option("--provider")] = "modrinth",
+    database: DatabaseOption = None,
+    output_directory: OutputOption = None,
+    resume: ResumeOption = False,
+    refresh: RefreshOption = False,
+    offline: OfflineOption = False,
+    verbose: VerboseOption = False,
+) -> None:
+    del resume
+    pipeline = _pipeline(database, output_directory, offline, refresh, verbose)
+    modpacks = pipeline.collect_modpacks(limit=limit, provider=provider)
+    typer.echo(f"Collected {len(modpacks)} modpacks")
+
+
+@providers_app.command("status")
+def providers_status(
+    database: DatabaseOption = None,
+    output_directory: OutputOption = None,
+    refresh: RefreshOption = False,
+    offline: OfflineOption = False,
+    verbose: VerboseOption = False,
+) -> None:
+    pipeline = _pipeline(database, output_directory, offline, refresh, verbose)
+    typer.echo(f"{'Provider':<12} {'Status':<10} {'Priority':<8} Reason")
+    for status in pipeline.provider_status():
+        priority = "-" if status.priority is None else str(status.priority)
+        typer.echo(f"{status.name:<12} {status.status:<10} {priority:<8} {status.reason}")
 
 
 @app.command("resolve-repositories")
@@ -137,6 +172,7 @@ def run_all(
     releases_per_pack: Annotated[int, typer.Option("--releases-per-pack", min=1)] = 5,
     minecraft_version: Annotated[str | None, typer.Option("--minecraft-version")] = None,
     loader: Annotated[str | None, typer.Option("--loader")] = None,
+    providers: Annotated[str, typer.Option("--providers")] = "modrinth",
     database: DatabaseOption = None,
     output_directory: OutputOption = None,
     resume: ResumeOption = False,
@@ -146,15 +182,18 @@ def run_all(
 ) -> None:
     del resume
     pipeline = _pipeline(database, output_directory, offline, refresh, verbose)
-    pipeline.collect_mods(limit=limit_mods)
+    pipeline.collect_mods(limit=limit_mods, provider=providers)
     pipeline.resolve_repositories()
     pipeline.collect_advisories()
-    pipeline.index_modpacks(
-        limit=limit_modpacks,
-        releases_per_pack=releases_per_pack,
-        minecraft_version=minecraft_version,
-        loader=loader,
-    )
+    if providers == "curseforge":
+        pipeline.index_modpacks(
+            limit=limit_modpacks,
+            releases_per_pack=releases_per_pack,
+            minecraft_version=minecraft_version,
+            loader=loader,
+        )
+    else:
+        pipeline.collect_modpacks(limit=limit_modpacks, provider=providers)
     pipeline.correlate()
     pipeline.report()
     typer.echo("Run complete")

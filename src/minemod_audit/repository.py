@@ -32,7 +32,8 @@ def resolve_repository(
     overrides: dict[int, dict[str, object]],
     candidates: list[RepositoryCandidate],
 ) -> RepositoryResolution:
-    override = overrides.get(mod.project_id)
+    override_key = int(str(mod.project_id)) if str(mod.project_id).isdigit() else None
+    override = overrides.get(override_key) if override_key is not None else None
     if override is not None:
         repository = override.get("repository")
         confidence = int(str(override.get("confidence", 100)))
