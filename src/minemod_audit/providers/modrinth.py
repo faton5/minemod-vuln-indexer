@@ -15,6 +15,7 @@ from minemod_audit.providers.base import (
 )
 
 MAX_MODRINTH_PAGE_SIZE = 100
+MAX_MODRINTH_BATCH_SIZE = 100
 
 
 def build_modrinth_user_agent(version: str = __version__, contact_email: str | None = None) -> str:
@@ -93,6 +94,18 @@ class ModrinthProvider:
         payload = self._get(f"/project/{project_id_or_slug}")
         return self._project_from_payload(payload)
 
+    def get_projects(self, project_ids: list[str]) -> dict[str, ProviderProject]:
+        projects: dict[str, ProviderProject] = {}
+        for batch in _batched_unique(project_ids, MAX_MODRINTH_BATCH_SIZE):
+            payload = self._get(
+                "/projects",
+                params={"ids": json.dumps(batch, separators=(",", ":"))},
+            )
+            for item in payload:
+                project = self._project_from_payload(item)
+                projects[project.provider_project_id] = project
+        return projects
+
     def get_project_versions(self, project_id_or_slug: str) -> list[ProviderVersion]:
         payload = self._get(
             f"/project/{project_id_or_slug}/version",
@@ -103,6 +116,18 @@ class ModrinthProvider:
     def get_version(self, version_id: str) -> ProviderVersion:
         payload = self._get(f"/version/{version_id}")
         return self._version_from_payload(payload)
+
+    def get_versions(self, version_ids: list[str]) -> dict[str, ProviderVersion]:
+        versions: dict[str, ProviderVersion] = {}
+        for batch in _batched_unique(version_ids, MAX_MODRINTH_BATCH_SIZE):
+            payload = self._get(
+                "/versions",
+                params={"ids": json.dumps(batch, separators=(",", ":"))},
+            )
+            for item in payload:
+                version = self._version_from_payload(item)
+                versions[version.provider_version_id] = version
+        return versions
 
     def get_project_dependencies(self, project_id_or_slug: str) -> list[ProviderDependency]:
         payload = self._get(f"/project/{project_id_or_slug}/dependencies")
@@ -209,3 +234,13 @@ class ModrinthProvider:
             ],
             raw_metadata=item,
         )
+
+
+def _batched_unique(values: list[str], size: int) -> list[list[str]]:
+    seen: set[str] = set()
+    unique = []
+    for value in values:
+        if value and value not in seen:
+            seen.add(value)
+            unique.append(value)
+    return [unique[index : index + size] for index in range(0, len(unique), size)]

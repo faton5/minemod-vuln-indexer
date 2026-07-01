@@ -26,6 +26,7 @@ from minemod_audit.models import (
 )
 from minemod_audit.providers.base import (
     ProviderDependency,
+    ProviderFile,
     ProviderProject,
     ProviderStatus,
     ProviderVersion,
@@ -405,12 +406,7 @@ class Pipeline:
             self._modpack_from_provider_project(group.primary) for group in deduped_projects
         ]
         releases = [self._release_from_provider_version(version) for version in versions]
-        components = [
-            self._component_from_provider_dependency(version, dependency)
-            for version in versions
-            for dependency in version.dependencies
-            if dependency.provider_project_id
-        ]
+        components = self._components_from_provider_versions(versions, provider=provider)
         self.store.replace_models(
             "provider_projects",
             provider_projects,
@@ -550,15 +546,99 @@ class Pipeline:
     def _component_from_provider_dependency(
         version: ProviderVersion,
         dependency: ProviderDependency,
+        *,
+        dependency_version: ProviderVersion | None = None,
+        dependency_project: ProviderProject | None = None,
     ) -> ModpackComponent:
-        provider_project_id = dependency.provider_project_id
+        provider_project_id = (
+            dependency_version.provider_project_id
+            if dependency_version is not None
+            else dependency.provider_project_id
+        )
+        if provider_project_id is None:
+            provider_project_id = "unresolved"
         provider_version_id = dependency.provider_version_id or provider_project_id
+        primary_file = _primary_provider_file(dependency_version) if dependency_version else None
+        resolution_status = "resolved" if dependency_version is not None else "unresolved"
         return ModpackComponent(
             modpack_file_id=f"{version.provider}:{version.provider_version_id}",
             mod_project_id=f"{version.provider}:{provider_project_id}",
             mod_file_id=f"{version.provider}:{provider_version_id}",
+            provider=dependency.provider,
+            provider_project_id=provider_project_id,
+            provider_version_id=dependency.provider_version_id,
+            mod_name=dependency_project.title if dependency_project else None,
+            mod_version=dependency_version.version_number if dependency_version else None,
+            filename=primary_file.filename if primary_file else None,
+            hashes=primary_file.hashes if primary_file else {},
+            loaders=dependency_version.loaders if dependency_version else [],
+            minecraft_versions=dependency_version.game_versions if dependency_version else [],
+            source_url=dependency_project.source_url if dependency_project else None,
+            resolution_status=resolution_status,
+            requires_manual_review=resolution_status != "resolved",
             required=dependency.dependency_type == "required",
         )
+
+    def _components_from_provider_versions(
+        self,
+        versions: list[ProviderVersion],
+        *,
+        provider: str,
+    ) -> list[ModpackComponent]:
+        dependencies = [
+            dependency
+            for version in versions
+            for dependency in version.dependencies
+            if dependency.provider_project_id
+        ]
+        if provider != "modrinth":
+            return [
+                self._component_from_provider_dependency(version, dependency)
+                for version in versions
+                for dependency in version.dependencies
+                if dependency.provider_project_id
+            ]
+
+        version_ids = [
+            dependency.provider_version_id
+            for dependency in dependencies
+            if dependency.provider_version_id
+        ]
+        provider_client = ProviderRegistry(
+            self.settings,
+            offline=self.offline,
+            refresh=self.refresh,
+        ).build_provider(provider)
+        try:
+            dependency_versions = provider_client.get_versions(version_ids)
+            project_ids = [
+                dependency_version.provider_project_id
+                for dependency_version in dependency_versions.values()
+            ]
+            project_ids.extend(
+                dependency.provider_project_id
+                for dependency in dependencies
+                if dependency.provider_project_id
+            )
+            dependency_projects = provider_client.get_projects(_unique_strings(project_ids))
+        finally:
+            provider_client.close()
+
+        return [
+            self._component_from_provider_dependency(
+                version,
+                dependency,
+                dependency_version=dependency_versions.get(dependency.provider_version_id or ""),
+                dependency_project=dependency_projects.get(
+                    dependency_versions[dependency.provider_version_id].provider_project_id
+                    if dependency.provider_version_id in dependency_versions
+                    else dependency.provider_project_id or ""
+                ),
+            )
+            for version in versions
+            for dependency in version.dependencies
+            if dependency.provider_project_id
+        ]
 
     def correlate(self) -> list[Finding]:
         vulnerabilities = self.store.load_models("vulnerabilities", Vulnerability)
@@ -572,6 +652,8 @@ class Pipeline:
 
         findings: list[Finding] = []
         for component in components:
+            if component.resolution_status != "resolved":
+                continue
             component_version = component.mod_version or component.filename or ""
             for vulnerability in vulnerabilities:
                 if vulnerability.mod_project_id != component.mod_project_id:
@@ -716,3 +798,19 @@ def _vulnerability_from_security_issue(
         evidence=[url] if url else [f"https://github.com/{repository}/issues"],
         requires_manual_review=True,
     )
+
+
+def _primary_provider_file(version: ProviderVersion | None) -> ProviderFile | None:
+    if version is None or not version.files:
+        return None
+    return next((file for file in version.files if file.primary), version.files[0])
+
+
+def _unique_strings(values: list[str]) -> list[str]:
+    seen: set[str] = set()
+    unique: list[str] = []
+    for value in values:
+        if value and value not in seen:
+            seen.add(value)
+            unique.append(value)
+    return unique

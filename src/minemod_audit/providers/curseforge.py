@@ -82,12 +82,19 @@ class CurseForgeProvider:
         payload = self.client.http.get_json(f"/v1/mods/{project_id_or_slug}")
         return self._project_from_mod(payload.get("data", {}))
 
+    def get_projects(self, project_ids: list[str]) -> dict[str, ProviderProject]:
+        return {project_id: self.get_project(project_id) for project_id in project_ids}
+
     def get_project_versions(self, project_id_or_slug: str) -> list[ProviderVersion]:
         files = self.client.get_files(int(project_id_or_slug), page_size=50)
         return [self._version_from_file(file_payload) for file_payload in files]
 
     def get_version(self, version_id: str) -> ProviderVersion:
         raise NotImplementedError("CurseForge requires project ID plus file ID for version lookup")
+
+    def get_versions(self, version_ids: list[str]) -> dict[str, ProviderVersion]:
+        del version_ids
+        return {}
 
     def get_project_dependencies(self, project_id_or_slug: str) -> list[ProviderDependency]:
         versions = self.get_project_versions(project_id_or_slug)

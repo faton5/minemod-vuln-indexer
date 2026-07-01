@@ -136,9 +136,18 @@ class ModpackComponent(BaseModel):
     modpack_file_id: int | str
     mod_project_id: int | str
     mod_file_id: int | str
+    provider: str | None = None
+    provider_project_id: str | None = None
+    provider_version_id: str | None = None
     mod_name: str | None = None
     mod_version: str | None = None
     filename: str | None = None
+    hashes: dict[str, str] = Field(default_factory=dict)
+    loaders: list[str] = Field(default_factory=list)
+    minecraft_versions: list[str] = Field(default_factory=list)
+    source_url: str | None = None
+    resolution_status: str = "unresolved"
+    requires_manual_review: bool = True
     required: bool = True
 
 
