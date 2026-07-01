@@ -55,6 +55,7 @@ minemod-audit collect-modpacks --provider modrinth --limit 100
 minemod-audit collect-mods --provider all --limit 20
 minemod-audit run --providers modrinth
 minemod-audit run --providers all
+minemod-audit dashboard
 ```
 
 Example provider status:
@@ -73,3 +74,35 @@ Modrinth and CurseForge do not expose identical catalogs. A project can exist
 on one platform but not the other, or expose different metadata. MineModVulnIndexer
 keeps provider IDs and raw metadata so conflicts can be reviewed instead of
 silently overwritten.
+
+## Local dashboard
+
+The local dashboard is a read-only Streamlit interface for inspecting the SQLite
+database created by the crawler. It does not start crawler jobs, does not call
+external APIs on page load, and opens on `127.0.0.1` by default.
+
+Install dependencies and launch:
+
+```bash
+uv sync --extra dev
+minemod-audit dashboard --database ./data/minemod.sqlite
+```
+
+Direct Streamlit launch is also supported:
+
+```bash
+streamlit run dashboard/app.py
+```
+
+Dashboard pages:
+
+- Overview: index counts, vulnerability charts, provider distribution and last run.
+- Mods: searchable project table with provider, loader and Minecraft filters.
+- Vulnerabilities: confirmed, candidate and unclear records remain visually separate.
+- Modpacks: indexed packs, releases and selected release details.
+- Findings: exact vulnerable-version matches with CSV, JSON and Markdown exports.
+- Manual Review: unresolved repositories, non-comparable versions and provider conflicts.
+- Runs: stored execution history when run records are available.
+
+GitHub Pages remains the static public project page. The Streamlit dashboard is
+the local dynamic viewer for SQLite data.

@@ -33,7 +33,7 @@ class Settings(BaseSettings):
     modrinth_requests_per_minute: int = Field(default=120, alias="MODRINTH_REQUESTS_PER_MINUTE")
     provider_priority: str = Field(default="modrinth,curseforge", alias="PROVIDER_PRIORITY")
 
-    database: Path = Path("data/minemod-audit.db")
+    database: Path = Path("data/minemod.sqlite")
     output_directory: Path = Path("output")
     cache_directory: Path = Path("cache/http")
     timeout_seconds: float = 30.0

@@ -1,3 +1,6 @@
+import os
+import subprocess
+import sys
 from pathlib import Path
 from typing import Annotated
 
@@ -45,6 +48,36 @@ def collect_mods(
     pipeline = _pipeline(database, output_directory, offline, refresh, verbose)
     mods = pipeline.collect_mods(limit=limit, provider=provider)
     typer.echo(f"Collected {len(mods)} mods")
+
+
+@app.command("dashboard")
+def dashboard(
+    host: Annotated[str, typer.Option("--host")] = "127.0.0.1",
+    port: Annotated[int, typer.Option("--port", min=1, max=65535)] = 8501,
+    database: Annotated[Path, typer.Option("--database")] = Path("data/minemod.sqlite"),
+    open_browser: Annotated[bool, typer.Option("--open-browser")] = False,
+    debug: Annotated[bool, typer.Option("--debug")] = False,
+) -> None:
+    env = os.environ.copy()
+    env["MINEMOD_DASHBOARD_DATABASE"] = str(database)
+    command = [
+        sys.executable,
+        "-m",
+        "streamlit",
+        "run",
+        "dashboard/app.py",
+        "--server.address",
+        host,
+        "--server.port",
+        str(port),
+        "--server.headless",
+        "false" if open_browser else "true",
+        "--browser.gatherUsageStats",
+        "false",
+    ]
+    if debug:
+        typer.echo("Launching Streamlit dashboard in debug mode")
+    subprocess.run(command, check=True, env=env)
 
 
 @app.command("collect-modpacks")
