@@ -6,7 +6,7 @@ from typing import Any
 
 from pydantic import BaseModel
 
-from minemod_audit.models import Finding
+from minemod_audit.models import Finding, SecurityEvidenceBundle
 
 
 def _dump_model(item: BaseModel) -> dict[str, Any]:
@@ -43,6 +43,44 @@ def render_findings_markdown(findings: list[Finding]) -> str:
     return "\n".join(lines)
 
 
+def render_security_bundles_markdown(bundles: list[SecurityEvidenceBundle]) -> str:
+    if not bundles:
+        return "# Recent Fix Candidates\n\nAucun candidat produit.\n"
+
+    lines = ["# Recent Fix Candidates", ""]
+    for bundle in bundles:
+        lines.extend(
+            [
+                f"[{bundle.status.upper()}] {bundle.mod_name}",
+                "",
+                f"Repository : {bundle.repository}",
+                f"Score : {bundle.confidence}/100",
+                f"Impact : {bundle.impact_category}",
+                f"Matched terms : {', '.join(bundle.matched_terms) or 'unknown'}",
+                f"Potentially affected : {', '.join(bundle.affected_versions) or 'manual review'}",
+                f"Fixed versions : {', '.join(bundle.fixed_versions) or 'unknown'}",
+            ]
+        )
+        evidence = [
+            item
+            for item in (
+                bundle.issue_url,
+                bundle.pull_request_url,
+                bundle.commit_url,
+                bundle.release_url,
+            )
+            if item is not None
+        ]
+        if evidence:
+            lines.append(f"Evidence : {', '.join(evidence)}")
+        if bundle.patch_summary:
+            lines.append(f"Patch summary : {bundle.patch_summary}")
+        if bundle.reasons:
+            lines.append(f"Reasons : {'; '.join(bundle.reasons)}")
+        lines.append("")
+    return "\n".join(lines)
+
+
 def write_json(path: Path, items: Sequence[BaseModel] | Sequence[dict[str, Any]]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = [_dump_model(item) if isinstance(item, BaseModel) else item for item in items]
@@ -66,6 +104,7 @@ def write_reports(
     vulnerabilities: list[BaseModel],
     components: list[BaseModel],
     findings: list[Finding],
+    recent_fix_candidates: list[SecurityEvidenceBundle] | None = None,
 ) -> None:
     output_directory.mkdir(parents=True, exist_ok=True)
     write_json(output_directory / "mods.json", mods)
@@ -90,3 +129,9 @@ def write_reports(
         render_findings_markdown(findings),
         encoding="utf-8",
     )
+    if recent_fix_candidates is not None:
+        write_json(output_directory / "recent_fix_candidates.json", recent_fix_candidates)
+        (output_directory / "recent_fix_candidates.md").write_text(
+            render_security_bundles_markdown(recent_fix_candidates),
+            encoding="utf-8",
+        )

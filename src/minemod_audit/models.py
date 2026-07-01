@@ -167,6 +167,34 @@ class PrioritizedMod(BaseModel):
     requires_manual_review: bool = False
 
 
+class SecurityEvidenceBundle(BaseModel):
+    mod_project_id: int | str
+    mod_name: str
+    repository: str
+    issue_url: str | None = None
+    pull_request_url: str | None = None
+    pull_request_merged_at: str | None = None
+    commit_sha: str | None = None
+    commit_url: str | None = None
+    release_url: str | None = None
+    release_version: str | None = None
+    published_at: str | None = None
+    updated_at: str | None = None
+    matched_terms: list[str] = Field(default_factory=list)
+    changed_files: list[str] = Field(default_factory=list)
+    patch_summary: str | None = None
+    maintainer_confirmation: bool = False
+    affected_versions: list[str] = Field(default_factory=list)
+    fixed_versions: list[str] = Field(default_factory=list)
+    impact_category: str = ImpactCategory.OTHER.value
+    attack_direction: str = AttackDirection.UNKNOWN.value
+    prerequisites: str | None = None
+    confidence: int = 0
+    status: str = "weak_signal"
+    reasons: list[str] = Field(default_factory=list)
+    requires_manual_review: bool = True
+
+
 class Finding(BaseModel):
     mod_name: str
     mod_version: str

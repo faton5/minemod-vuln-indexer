@@ -1,3 +1,4 @@
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -111,6 +112,107 @@ class GitHubClient:
                 enriched["matched_terms"] = sorted(matched)
                 results_by_url[url] = enriched
         return list(results_by_url.values())
+
+    def search_recent_pull_requests(
+        self,
+        repository: str,
+        *,
+        terms: tuple[str, ...],
+        since_date: str,
+        per_term: int = 5,
+    ) -> list[dict[str, Any]]:
+        return self._search_recent_issue_like(
+            repository,
+            terms=terms,
+            qualifier=f"is:pr is:merged merged:>={since_date}",
+            per_term=per_term,
+        )
+
+    def search_recent_issues(
+        self,
+        repository: str,
+        *,
+        terms: tuple[str, ...],
+        since_date: str,
+        per_term: int = 5,
+    ) -> list[dict[str, Any]]:
+        return self._search_recent_issue_like(
+            repository,
+            terms=terms,
+            qualifier=f"is:issue updated:>={since_date}",
+            per_term=per_term,
+        )
+
+    def _search_recent_issue_like(
+        self,
+        repository: str,
+        *,
+        terms: tuple[str, ...],
+        qualifier: str,
+        per_term: int,
+    ) -> list[dict[str, Any]]:
+        results_by_url: dict[str, dict[str, Any]] = {}
+        for term in terms:
+            payload = self.http.get_json(
+                "/search/issues",
+                params={
+                    "q": f"repo:{repository} {term} in:title,body {qualifier}",
+                    "per_page": per_term,
+                    "sort": "updated",
+                    "order": "desc",
+                },
+            )
+            for item in payload.get("items", []):
+                url = str(item.get("html_url") or item.get("url") or item.get("id"))
+                enriched = dict(item)
+                matched = set(enriched.get("matched_terms") or [])
+                matched.add(term)
+                if url in results_by_url:
+                    matched.update(results_by_url[url].get("matched_terms") or [])
+                enriched["matched_terms"] = sorted(matched)
+                results_by_url[url] = enriched
+        return list(results_by_url.values())
+
+    def list_recent_commits(
+        self, repository: str, *, since: str, per_page: int = 30
+    ) -> list[dict[str, Any]]:
+        owner, repo = repository.split("/", maxsplit=1)
+        payload = self.http.get_json(
+            f"/repos/{owner}/{repo}/commits",
+            params={"since": since, "per_page": per_page},
+        )
+        return [dict(item) for item in payload]
+
+    def get_commit_details(self, repository: str, sha: str) -> dict[str, Any]:
+        owner, repo = repository.split("/", maxsplit=1)
+        payload = self.http.get_json(f"/repos/{owner}/{repo}/commits/{sha}")
+        return dict(payload)
+
+    def list_pull_request_commits(self, repository: str, pull_number: int) -> list[dict[str, Any]]:
+        owner, repo = repository.split("/", maxsplit=1)
+        payload = self.http.get_json(f"/repos/{owner}/{repo}/pulls/{pull_number}/commits")
+        return [dict(item) for item in payload]
+
+    def list_recent_releases(
+        self, repository: str, *, since: str, per_page: int = 30
+    ) -> list[dict[str, Any]]:
+        owner, repo = repository.split("/", maxsplit=1)
+        payload = self.http.get_json(
+            f"/repos/{owner}/{repo}/releases",
+            params={"per_page": per_page},
+        )
+        since_dt = datetime.fromisoformat(since.replace("Z", "+00:00"))
+        releases = payload if isinstance(payload, list) else payload.get("data", [])
+        recent: list[dict[str, Any]] = []
+        for item in releases:
+            published = str(item.get("published_at") or item.get("created_at") or "")
+            try:
+                published_dt = datetime.fromisoformat(published.replace("Z", "+00:00"))
+            except ValueError:
+                continue
+            if published_dt >= since_dt:
+                recent.append(dict(item))
+        return recent
 
     def collect_global_advisories(self, repository: str) -> list[dict[str, Any]]:
         payload = self.http.get_json(

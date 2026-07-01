@@ -163,6 +163,7 @@ def prioritize_mods(
 def mine_security_signals(
     top: Annotated[int, typer.Option("--top", min=1)] = 10,
     per_term: Annotated[int, typer.Option("--per-term", min=1, max=20)] = 5,
+    lookback_days: Annotated[int, typer.Option("--lookback-days", min=1)] = 180,
     database: DatabaseOption = None,
     output_directory: OutputOption = None,
     resume: ResumeOption = False,
@@ -172,8 +173,49 @@ def mine_security_signals(
 ) -> None:
     del resume
     pipeline = _pipeline(database, output_directory, offline, refresh, verbose)
-    vulnerabilities = pipeline.mine_security_signals(top=top, per_term=per_term)
+    vulnerabilities = pipeline.discover_recent_fixes(
+        top=top,
+        lookback_days=lookback_days,
+        per_term=per_term,
+    )
     typer.echo(f"Mined {len(vulnerabilities)} candidate security signals")
+
+
+@app.command("discover-recent-fixes")
+def discover_recent_fixes(
+    top: Annotated[int, typer.Option("--top", min=1)] = 20,
+    lookback_days: Annotated[int, typer.Option("--lookback-days", min=1)] = 180,
+    per_term: Annotated[int, typer.Option("--per-term", min=1, max=20)] = 5,
+    database: DatabaseOption = None,
+    output_directory: OutputOption = None,
+    resume: ResumeOption = False,
+    refresh: RefreshOption = False,
+    offline: OfflineOption = False,
+    verbose: VerboseOption = False,
+) -> None:
+    del resume
+    pipeline = _pipeline(database, output_directory, offline, refresh, verbose)
+    bundles = pipeline.discover_recent_fixes(
+        top=top,
+        lookback_days=lookback_days,
+        per_term=per_term,
+    )
+    typer.echo(f"Discovered {len(bundles)} recent fix evidence bundles")
+
+
+@app.command("correlate-recent-fixes")
+def correlate_recent_fixes(
+    database: DatabaseOption = None,
+    output_directory: OutputOption = None,
+    resume: ResumeOption = False,
+    refresh: RefreshOption = False,
+    offline: OfflineOption = False,
+    verbose: VerboseOption = False,
+) -> None:
+    del resume, refresh
+    pipeline = _pipeline(database, output_directory, offline, False, verbose)
+    findings = pipeline.correlate_recent_fixes()
+    typer.echo(f"Produced {len(findings)} recent-fix findings")
 
 
 @app.command("index-modpacks")
@@ -271,6 +313,7 @@ def targeted_run(
     limit_modpacks: Annotated[int, typer.Option("--limit-modpacks", min=1)] = 20,
     top: Annotated[int, typer.Option("--top", min=1)] = 10,
     per_term: Annotated[int, typer.Option("--per-term", min=1, max=20)] = 5,
+    lookback_days: Annotated[int, typer.Option("--lookback-days", min=1)] = 180,
     providers: Annotated[str, typer.Option("--providers")] = "modrinth",
     database: DatabaseOption = None,
     output_directory: OutputOption = None,
@@ -283,12 +326,16 @@ def targeted_run(
     pipeline = _pipeline(database, output_directory, offline, refresh, verbose)
     pipeline.collect_modpacks(limit=limit_modpacks, provider=providers)
     prioritized = pipeline.prioritize_mods(top=top, provider=providers)
-    vulnerabilities = pipeline.mine_security_signals(top=top, per_term=per_term)
+    bundles = pipeline.discover_recent_fixes(
+        top=top,
+        lookback_days=lookback_days,
+        per_term=per_term,
+    )
     pipeline.correlate()
     pipeline.report()
     typer.echo(
         f"Targeted run complete: {len(prioritized)} prioritized mods, "
-        f"{len(vulnerabilities)} candidate security signals"
+        f"{len(bundles)} recent fix evidence bundles"
     )
 
 

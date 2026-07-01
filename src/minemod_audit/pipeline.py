@@ -1,14 +1,10 @@
 from collections import Counter
+from datetime import datetime
 from pathlib import Path
 
 import httpx
 
-from minemod_audit.advisories import (
-    GitHubClient,
-    NvdClient,
-    deduplicate_models,
-    normalize_advisory,
-)
+from minemod_audit.advisories import GitHubClient, deduplicate_models, normalize_advisory
 from minemod_audit.config import Settings
 from minemod_audit.curseforge import CurseForgeClient
 from minemod_audit.database import DataStore
@@ -21,6 +17,7 @@ from minemod_audit.models import (
     ModProject,
     PrioritizedMod,
     RepositoryResolution,
+    SecurityEvidenceBundle,
     SourceType,
     Vulnerability,
 )
@@ -40,6 +37,16 @@ from minemod_audit.repository import (
     resolve_repository,
 )
 from minemod_audit.security import classify_impact
+from minemod_audit.security_discovery import (
+    RECENT_FIX_TERMS,
+    detect_matched_terms,
+    infer_fixed_versions,
+    patch_adds_server_validation,
+    score_security_bundle,
+    since_for_lookback,
+    summarize_patch,
+    visible_recent_fix_bundles,
+)
 from minemod_audit.versioning import VersionDecision, is_version_affected
 
 TARGETED_SECURITY_TERMS: tuple[str, ...] = (
@@ -146,13 +153,6 @@ class Pipeline:
             offline=self.offline,
             refresh=self.refresh,
         )
-        nvd = NvdClient(
-            api_key=self.settings.nvd_api_key,
-            cache_directory=self.settings.cache_directory,
-            timeout_seconds=self.settings.timeout_seconds,
-            offline=self.offline,
-            refresh=self.refresh,
-        )
         vulnerabilities: list[Vulnerability] = []
         try:
             for repository in repositories:
@@ -170,25 +170,8 @@ class Pipeline:
                             source_type=SourceType.REPOSITORY_ADVISORY,
                         )
                     )
-                if not self.offline:
-                    for raw in nvd.search_keyword(repository.mod_name):
-                        cve = raw.get("cve", {}) if isinstance(raw, dict) else {}
-                        vulnerabilities.append(
-                            normalize_advisory(
-                                cve, repository=repository, source_type=SourceType.NVD
-                            )
-                        )
-                    for raw in github.collect_repository_signals(repository.repository):
-                        vulnerabilities.append(
-                            normalize_advisory(
-                                raw,
-                                repository=repository,
-                                source_type=SourceType.ISSUE,
-                            )
-                        )
         finally:
             github.close()
-            nvd.close()
         vulnerabilities = deduplicate_models(vulnerabilities)
         self.store.replace_models(
             "vulnerabilities",
@@ -287,10 +270,36 @@ class Pipeline:
         terms: tuple[str, ...] = TARGETED_SECURITY_TERMS,
         per_term: int = 5,
     ) -> list[Vulnerability]:
+        del terms
+        bundles = self.discover_recent_fixes(
+            top=top,
+            lookback_days=self.settings.security_lookback_days,
+            per_term=per_term,
+        )
+        vulnerabilities = [
+            _vulnerability_from_bundle(bundle) for bundle in visible_recent_fix_bundles(bundles)
+        ]
+        self.store.replace_models(
+            "vulnerabilities",
+            vulnerabilities,
+            key=lambda item: item.internal_id,
+        )
+        return vulnerabilities
+
+    def discover_recent_fixes(
+        self,
+        *,
+        top: int = 20,
+        lookback_days: int = 180,
+        per_term: int = 5,
+    ) -> list[SecurityEvidenceBundle]:
         prioritized = self.store.load_models("prioritized_mods", PrioritizedMod)
         if not prioritized:
             prioritized = self.prioritize_mods(top=top)
         targets = sorted(prioritized, key=lambda item: item.score, reverse=True)[:top]
+        since_dt = since_for_lookback(lookback_days)
+        since_iso = since_dt.isoformat().replace("+00:00", "Z")
+        since_date = since_dt.date().isoformat()
         github = GitHubClient(
             token=self.settings.github_token,
             cache_directory=self.settings.cache_directory,
@@ -298,7 +307,7 @@ class Pipeline:
             offline=self.offline,
             refresh=self.refresh,
         )
-        vulnerabilities: list[Vulnerability] = []
+        bundles: list[SecurityEvidenceBundle] = []
         repositories: list[RepositoryResolution] = []
         try:
             for target in targets:
@@ -333,34 +342,90 @@ class Pipeline:
                 repositories.append(resolution)
                 if repository is None:
                     continue
-                for raw in github.search_security_issues(
-                    repository,
-                    terms=terms,
-                    per_term=per_term,
-                ):
-                    vulnerabilities.append(
-                        _vulnerability_from_security_issue(target, repository, raw)
+                recent_releases = github.list_recent_releases(repository, since=since_iso)
+                recent_commits = github.list_recent_commits(repository, since=since_iso)
+                bundles.extend(
+                    _bundles_from_advisories(
+                        target,
+                        repository,
+                        github.collect_global_advisories(repository),
+                        lookback_since=since_dt,
                     )
+                )
+                bundles.extend(
+                    _bundles_from_pull_requests(
+                        target,
+                        repository,
+                        github.search_recent_pull_requests(
+                            repository,
+                            terms=RECENT_FIX_TERMS,
+                            since_date=since_date,
+                            per_term=per_term,
+                        ),
+                        github=github,
+                        releases=recent_releases,
+                    )
+                )
+                bundles.extend(
+                    _bundles_from_commits(
+                        target,
+                        repository,
+                        recent_commits,
+                        github=github,
+                        releases=recent_releases,
+                    )
+                )
+                bundles.extend(_bundles_from_releases(target, repository, recent_releases))
+                bundles.extend(
+                    _bundles_from_issues(
+                        target,
+                        repository,
+                        github.search_recent_issues(
+                            repository,
+                            terms=RECENT_FIX_TERMS,
+                            since_date=since_date,
+                            per_term=per_term,
+                        ),
+                    )
+                )
         finally:
             github.close()
 
-        vulnerabilities = deduplicate_models(vulnerabilities)
+        scored = [
+            score_security_bundle(
+                bundle,
+                lookback_since=since_dt,
+                modpack_count=_target_modpack_count(targets, bundle.mod_project_id),
+            )
+            for bundle in _deduplicate_bundles(bundles)
+        ]
         self.store.append_models(
             "repositories",
             repositories,
             key=lambda item: str(item.mod_project_id),
         )
-        self.store.append_models(
-            "security_signals",
-            vulnerabilities,
-            key=lambda item: item.internal_id,
+        self.store.replace_models(
+            "recent_fix_candidates",
+            scored,
+            key=_security_bundle_key,
         )
-        self.store.append_models(
+        self.store.replace_models(
+            "security_signals",
+            scored,
+            key=_security_bundle_key,
+        )
+        vulnerabilities = [
+            _vulnerability_from_bundle(bundle) for bundle in visible_recent_fix_bundles(scored)
+        ]
+        self.store.replace_models(
             "vulnerabilities",
             vulnerabilities,
             key=lambda item: item.internal_id,
         )
-        return vulnerabilities
+        return scored
+
+    def correlate_recent_fixes(self) -> list[Finding]:
+        return self.correlate()
 
     def index_modpacks(
         self,
@@ -720,6 +785,10 @@ class Pipeline:
             vulnerabilities=self.store.load_models("vulnerabilities", Vulnerability),
             components=self.store.load_models("modpack_components", ModpackComponent),
             findings=self.store.load_models("findings", Finding),
+            recent_fix_candidates=self.store.load_models(
+                "recent_fix_candidates",
+                SecurityEvidenceBundle,
+            ),
         )
 
 
@@ -814,3 +883,350 @@ def _unique_strings(values: list[str]) -> list[str]:
             seen.add(value)
             unique.append(value)
     return unique
+
+
+def _bundles_from_advisories(
+    mod: PrioritizedMod,
+    repository: str,
+    advisories: list[dict[str, object]],
+    *,
+    lookback_since: datetime,
+) -> list[SecurityEvidenceBundle]:
+    bundles: list[SecurityEvidenceBundle] = []
+    for advisory in advisories:
+        updated_at = str(advisory.get("updated_at") or advisory.get("published_at") or "")
+        if updated_at and (parsed := _parse_datetime(updated_at)) and parsed < lookback_since:
+            continue
+        url = str(
+            advisory.get("html_url") or advisory.get("url") or advisory.get("permalink") or ""
+        )
+        text = " ".join(
+            str(advisory.get(field) or "")
+            for field in ("summary", "description", "cve_id", "ghsa_id")
+        )
+        bundles.append(
+            SecurityEvidenceBundle(
+                mod_project_id=mod.project_id,
+                mod_name=mod.name,
+                repository=repository,
+                issue_url=url or None,
+                published_at=str(advisory.get("published_at") or ""),
+                updated_at=updated_at or None,
+                matched_terms=detect_matched_terms(text),
+                fixed_versions=_as_string_list(advisory.get("fixed_versions")),
+                affected_versions=_as_string_list(advisory.get("affected_versions")),
+                reasons=["advisory"],
+            )
+        )
+    return bundles
+
+
+def _bundles_from_pull_requests(
+    mod: PrioritizedMod,
+    repository: str,
+    pull_requests: list[dict[str, object]],
+    *,
+    github: GitHubClient,
+    releases: list[dict[str, object]],
+) -> list[SecurityEvidenceBundle]:
+    bundles: list[SecurityEvidenceBundle] = []
+    for item in pull_requests:
+        url = str(item.get("html_url") or "")
+        pull_number = _number_from_github_url(url)
+        commits = github.list_pull_request_commits(repository, pull_number) if pull_number else []
+        commit_sha = str(commits[0].get("sha") or "") if commits else ""
+        commit_details = github.get_commit_details(repository, commit_sha) if commit_sha else {}
+        changed_files, patches = _changed_files_and_patches(commit_details)
+        release = _matching_release(releases, commit_sha, item)
+        release_text = _release_text(release)
+        body = str(item.get("body") or "")
+        title = str(item.get("title") or "")
+        fixed_versions = infer_fixed_versions(f"{title}\n{body}\n{release_text}")
+        release_version = (
+            str(release.get("tag_name") or release.get("name") or "") if release else ""
+        )
+        if release_version:
+            fixed_versions = sorted(set([*fixed_versions, release_version]))
+        patch_summary = summarize_patch(changed_files, patches)
+        bundles.append(
+            SecurityEvidenceBundle(
+                mod_project_id=mod.project_id,
+                mod_name=mod.name,
+                repository=repository,
+                pull_request_url=url or None,
+                pull_request_merged_at=str(item.get("closed_at") or item.get("updated_at") or ""),
+                commit_sha=commit_sha or None,
+                commit_url=str(commit_details.get("html_url") or "") or None,
+                release_url=str(release.get("html_url") or "") if release else None,
+                release_version=release_version or None,
+                published_at=str(item.get("created_at") or ""),
+                updated_at=str(item.get("updated_at") or ""),
+                matched_terms=sorted(
+                    set(
+                        [
+                            *_as_string_list(item.get("matched_terms")),
+                            *detect_matched_terms(f"{title}\n{body}\n{release_text}"),
+                        ]
+                    )
+                ),
+                changed_files=changed_files,
+                patch_summary=patch_summary,
+                maintainer_confirmation=str(item.get("author_association") or "").lower()
+                in {"owner", "member", "collaborator"},
+                fixed_versions=fixed_versions,
+                reasons=["server_validation_diff"] if patch_adds_server_validation(patches) else [],
+            )
+        )
+    return bundles
+
+
+def _bundles_from_commits(
+    mod: PrioritizedMod,
+    repository: str,
+    commits: list[dict[str, object]],
+    *,
+    github: GitHubClient,
+    releases: list[dict[str, object]],
+) -> list[SecurityEvidenceBundle]:
+    bundles: list[SecurityEvidenceBundle] = []
+    for item in commits:
+        commit = item.get("commit") if isinstance(item.get("commit"), dict) else {}
+        message = str(commit.get("message") or "") if isinstance(commit, dict) else ""
+        matched_terms = detect_matched_terms(message)
+        if not matched_terms:
+            continue
+        sha = str(item.get("sha") or "")
+        details = github.get_commit_details(repository, sha) if sha else item
+        changed_files, patches = _changed_files_and_patches(details)
+        release = _matching_release(releases, sha, item)
+        release_version = (
+            str(release.get("tag_name") or release.get("name") or "") if release else ""
+        )
+        bundles.append(
+            SecurityEvidenceBundle(
+                mod_project_id=mod.project_id,
+                mod_name=mod.name,
+                repository=repository,
+                commit_sha=sha or None,
+                commit_url=str(item.get("html_url") or details.get("html_url") or "") or None,
+                release_url=str(release.get("html_url") or "") if release else None,
+                release_version=release_version or None,
+                published_at=str(commit.get("committer", {}).get("date") or "")
+                if isinstance(commit, dict)
+                else None,
+                updated_at=str(commit.get("committer", {}).get("date") or "")
+                if isinstance(commit, dict)
+                else None,
+                matched_terms=matched_terms,
+                changed_files=changed_files,
+                patch_summary=summarize_patch(changed_files, patches),
+                fixed_versions=[release_version] if release_version else [],
+                reasons=["server_validation_diff"] if patch_adds_server_validation(patches) else [],
+            )
+        )
+    return bundles
+
+
+def _bundles_from_releases(
+    mod: PrioritizedMod,
+    repository: str,
+    releases: list[dict[str, object]],
+) -> list[SecurityEvidenceBundle]:
+    bundles: list[SecurityEvidenceBundle] = []
+    for release in releases:
+        text = _release_text(release)
+        matched_terms = detect_matched_terms(text)
+        if not matched_terms:
+            continue
+        release_version = str(release.get("tag_name") or release.get("name") or "")
+        bundles.append(
+            SecurityEvidenceBundle(
+                mod_project_id=mod.project_id,
+                mod_name=mod.name,
+                repository=repository,
+                release_url=str(release.get("html_url") or "") or None,
+                release_version=release_version or None,
+                published_at=str(release.get("published_at") or release.get("created_at") or ""),
+                updated_at=str(release.get("published_at") or release.get("created_at") or ""),
+                matched_terms=matched_terms,
+                fixed_versions=[release_version] if release_version else infer_fixed_versions(text),
+                reasons=["release"],
+            )
+        )
+    return bundles
+
+
+def _bundles_from_issues(
+    mod: PrioritizedMod,
+    repository: str,
+    issues: list[dict[str, object]],
+) -> list[SecurityEvidenceBundle]:
+    bundles: list[SecurityEvidenceBundle] = []
+    for item in issues:
+        text = (
+            f"{item.get('title') or ''}\n{item.get('body') or ''}\n{item.get('state_reason') or ''}"
+        )
+        bundles.append(
+            SecurityEvidenceBundle(
+                mod_project_id=mod.project_id,
+                mod_name=mod.name,
+                repository=repository,
+                issue_url=str(item.get("html_url") or "") or None,
+                published_at=str(item.get("created_at") or ""),
+                updated_at=str(item.get("updated_at") or ""),
+                matched_terms=sorted(
+                    set(
+                        [
+                            *_as_string_list(item.get("matched_terms")),
+                            *detect_matched_terms(text),
+                        ]
+                    )
+                ),
+                maintainer_confirmation=str(item.get("author_association") or "").lower()
+                in {"owner", "member", "collaborator"},
+                reasons=[
+                    str(label.get("name") or "")
+                    for label in _as_dict_list(item.get("labels"))
+                    if isinstance(label, dict)
+                ],
+            )
+        )
+    return bundles
+
+
+def _vulnerability_from_bundle(bundle: SecurityEvidenceBundle) -> Vulnerability:
+    source_url = (
+        bundle.pull_request_url
+        or bundle.commit_url
+        or bundle.release_url
+        or bundle.issue_url
+        or f"https://github.com/{bundle.repository}"
+    )
+    return Vulnerability(
+        internal_id=f"recent-fix:{source_url}",
+        mod_project_id=bundle.mod_project_id,
+        mod_name=bundle.mod_name,
+        repository=bundle.repository,
+        title=bundle.patch_summary or f"Recent security fix candidate in {bundle.repository}",
+        description="\n".join(bundle.reasons),
+        source_type=_source_type_from_bundle(bundle),
+        source_url=source_url,
+        impact_category=bundle.impact_category,
+        attack_direction=bundle.attack_direction,
+        prerequisites=bundle.prerequisites,
+        affected_versions=bundle.affected_versions,
+        fixed_versions=bundle.fixed_versions,
+        status="candidate",
+        confidence=bundle.confidence,
+        evidence=[
+            value
+            for value in (
+                bundle.issue_url,
+                bundle.pull_request_url,
+                bundle.commit_url,
+                bundle.release_url,
+            )
+            if value
+        ],
+        requires_manual_review=bundle.requires_manual_review,
+    )
+
+
+def _source_type_from_bundle(bundle: SecurityEvidenceBundle) -> SourceType:
+    if bundle.pull_request_url:
+        return SourceType.PULL_REQUEST
+    if bundle.commit_url:
+        return SourceType.COMMIT
+    if bundle.release_url:
+        return SourceType.RELEASE
+    return SourceType.ISSUE
+
+
+def _security_bundle_key(bundle: SecurityEvidenceBundle) -> str:
+    return "|".join(
+        str(part or "")
+        for part in (
+            bundle.mod_project_id,
+            bundle.issue_url,
+            bundle.pull_request_url,
+            bundle.commit_sha,
+            bundle.release_url,
+        )
+    )
+
+
+def _deduplicate_bundles(bundles: list[SecurityEvidenceBundle]) -> list[SecurityEvidenceBundle]:
+    deduped: dict[str, SecurityEvidenceBundle] = {}
+    for bundle in bundles:
+        deduped[_security_bundle_key(bundle)] = bundle
+    return list(deduped.values())
+
+
+def _target_modpack_count(targets: list[PrioritizedMod], mod_project_id: int | str) -> int:
+    for target in targets:
+        if str(target.project_id) == str(mod_project_id):
+            return target.modpack_count
+    return 0
+
+
+def _number_from_github_url(url: str) -> int | None:
+    try:
+        return int(url.rstrip("/").split("/")[-1])
+    except ValueError:
+        return None
+
+
+def _changed_files_and_patches(details: dict[str, object]) -> tuple[list[str], list[str]]:
+    files = details.get("files")
+    if not isinstance(files, list):
+        return [], []
+    changed_files: list[str] = []
+    patches: list[str] = []
+    for file_payload in files:
+        if not isinstance(file_payload, dict):
+            continue
+        filename = file_payload.get("filename")
+        patch = file_payload.get("patch")
+        if filename:
+            changed_files.append(str(filename))
+        if patch:
+            patches.append(str(patch))
+    return changed_files, patches
+
+
+def _as_string_list(value: object) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [str(item) for item in value if item is not None]
+
+
+def _as_dict_list(value: object) -> list[dict[str, object]]:
+    if not isinstance(value, list):
+        return []
+    return [item for item in value if isinstance(item, dict)]
+
+
+def _matching_release(
+    releases: list[dict[str, object]],
+    commit_sha: str,
+    source: dict[str, object],
+) -> dict[str, object]:
+    source_text = " ".join(str(source.get(field) or "") for field in ("title", "body"))
+    source_terms = detect_matched_terms(source_text)
+    for release in releases:
+        release_text = _release_text(release)
+        if commit_sha and commit_sha in release_text:
+            return release
+        if source_terms and any(term in release_text.lower() for term in source_terms):
+            return release
+    return {}
+
+
+def _release_text(release: dict[str, object]) -> str:
+    return " ".join(str(release.get(field) or "") for field in ("name", "tag_name", "body"))
+
+
+def _parse_datetime(value: str) -> datetime | None:
+    from minemod_audit.security_discovery import parse_github_datetime
+
+    return parse_github_datetime(value)

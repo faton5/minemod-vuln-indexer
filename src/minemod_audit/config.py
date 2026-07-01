@@ -32,6 +32,7 @@ class Settings(BaseSettings):
     modrinth_contact_email: str | None = Field(default=None, alias="MODRINTH_CONTACT_EMAIL")
     modrinth_requests_per_minute: int = Field(default=120, alias="MODRINTH_REQUESTS_PER_MINUTE")
     provider_priority: str = Field(default="modrinth,curseforge", alias="PROVIDER_PRIORITY")
+    security_lookback_days: int = Field(default=180, alias="SECURITY_LOOKBACK_DAYS")
 
     database: Path = Path("data/minemod.sqlite")
     output_directory: Path = Path("output")

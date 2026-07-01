@@ -49,26 +49,83 @@ class FakeGitHubClient:
     def __init__(self, *args: object, **kwargs: object) -> None:
         self.closed = False
 
-    def search_security_issues(
+    def list_recent_releases(self, repository: str, *, since: str) -> list[dict[str, Any]]:
+        assert repository == "example/popular-lib"
+        assert since
+        return [
+            {
+                "html_url": "https://github.com/example/popular-lib/releases/tag/1.2.4",
+                "tag_name": "1.2.4",
+                "name": "1.2.4",
+                "body": "Security fix for server-side validation. Commit abc123.",
+                "published_at": "2026-06-01T00:00:00Z",
+            }
+        ]
+
+    def list_recent_commits(self, repository: str, *, since: str) -> list[dict[str, Any]]:
+        assert repository == "example/popular-lib"
+        assert since
+        return []
+
+    def collect_global_advisories(self, repository: str) -> list[dict[str, Any]]:
+        assert repository == "example/popular-lib"
+        return []
+
+    def search_recent_pull_requests(
         self,
         repository: str,
         *,
         terms: tuple[str, ...],
+        since_date: str,
         per_term: int,
     ) -> list[dict[str, Any]]:
         assert repository == "example/popular-lib"
-        assert "CVE" in terms
+        assert "server-side validation" in terms
+        assert since_date
         assert per_term == 3
         return [
             {
                 "id": 42,
-                "title": "CVE candidate: server crash on malformed packet",
-                "body": "Security report for a denial of service issue.",
-                "html_url": "https://github.com/example/popular-lib/issues/42",
-                "state": "open",
-                "matched_terms": ["CVE", "server crash"],
+                "title": "Fix dupe with server-side validation",
+                "body": "Do not trust client packets. Fixed in 1.2.4.",
+                "html_url": "https://github.com/example/popular-lib/pull/42",
+                "closed_at": "2026-06-01T00:00:00Z",
+                "updated_at": "2026-06-01T00:00:00Z",
+                "author_association": "MEMBER",
+                "matched_terms": ["fix dupe", "server-side validation"],
             }
         ]
+
+    def search_recent_issues(
+        self,
+        repository: str,
+        *,
+        terms: tuple[str, ...],
+        since_date: str,
+        per_term: int,
+    ) -> list[dict[str, Any]]:
+        del repository, terms, since_date, per_term
+        return []
+
+    def list_pull_request_commits(self, repository: str, pull_number: int) -> list[dict[str, Any]]:
+        assert repository == "example/popular-lib"
+        assert pull_number == 42
+        return [{"sha": "abc123"}]
+
+    def get_commit_details(self, repository: str, sha: str) -> dict[str, Any]:
+        assert repository == "example/popular-lib"
+        assert sha == "abc123"
+        return {
+            "html_url": "https://github.com/example/popular-lib/commit/abc123",
+            "files": [
+                {
+                    "filename": "src/PacketHandler.java",
+                    "patch": (
+                        "+ if (!player.hasPermission(node)) return;\n+ validatePacket(packet);"
+                    ),
+                }
+            ],
+        }
 
     def search_repositories(
         self,
@@ -154,10 +211,11 @@ def test_mine_security_signals_creates_candidate_vulnerabilities(
     stored = pipeline.store.load_models("vulnerabilities", Vulnerability)
     assert vulnerabilities == stored
     assert stored[0].mod_name == "Popular Lib"
-    assert stored[0].source_type == SourceType.ISSUE
+    assert stored[0].source_type == SourceType.PULL_REQUEST
     assert stored[0].status == "candidate"
-    assert stored[0].requires_manual_review is True
-    assert "server crash" in stored[0].description.lower()
+    assert stored[0].confidence >= 70
+    assert stored[0].fixed_versions == ["1.2.4"]
+    assert "validation" in stored[0].title.lower()
 
 
 def test_correlate_skips_candidate_without_version_rules(tmp_path: Path) -> None:
