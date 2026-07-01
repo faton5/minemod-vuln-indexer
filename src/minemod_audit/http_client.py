@@ -31,6 +31,26 @@ def parse_retry_after(value: str | None) -> float | None:
     return max(0.0, (parsed - datetime.now(UTC)).total_seconds())
 
 
+def _header_value(headers: Mapping[str, str], name: str) -> str | None:
+    for key, value in headers.items():
+        if key.lower() == name.lower():
+            return value
+    return None
+
+
+def rate_limit_delay_from_headers(headers: Mapping[str, str]) -> float | None:
+    retry_after = parse_retry_after(_header_value(headers, "Retry-After"))
+    if retry_after is not None:
+        return retry_after
+    reset_at = _header_value(headers, "X-RateLimit-Reset")
+    if not reset_at:
+        return None
+    try:
+        return max(0.0, float(reset_at) - time.time())
+    except ValueError:
+        return None
+
+
 def redact_headers(headers: Mapping[str, str]) -> dict[str, str]:
     secret_names = {"authorization", "x-api-key", "api-key"}
     return {
@@ -89,17 +109,17 @@ class HttpClient:
 
         response = self._client.get(path, params=params)
         if response.status_code == 429:
-            retry_after = parse_retry_after(response.headers.get("Retry-After"))
+            retry_after = rate_limit_delay_from_headers(response.headers)
             if retry_after:
                 time.sleep(retry_after)
             raise RateLimitError(retry_after)
         if response.status_code == 403 and response.headers.get("X-RateLimit-Remaining") == "0":
-            retry_after = parse_retry_after(response.headers.get("Retry-After"))
+            retry_after = rate_limit_delay_from_headers(response.headers)
             if retry_after:
                 time.sleep(retry_after)
             raise RateLimitError(retry_after)
         if response.status_code in {500, 502, 503, 504}:
-            retry_after = parse_retry_after(response.headers.get("Retry-After"))
+            retry_after = rate_limit_delay_from_headers(response.headers)
             if retry_after:
                 time.sleep(retry_after)
             raise RateLimitError(retry_after)
@@ -118,7 +138,7 @@ class HttpClient:
             raise FileNotFoundError(f"No cached response for POST {path}")
         response = self._client.post(path, json=json_body)
         if response.status_code == 429:
-            retry_after = parse_retry_after(response.headers.get("Retry-After"))
+            retry_after = rate_limit_delay_from_headers(response.headers)
             if retry_after:
                 time.sleep(retry_after)
             raise RateLimitError(retry_after)

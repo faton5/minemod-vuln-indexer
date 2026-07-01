@@ -18,6 +18,9 @@ servers, execute proof-of-concepts or exploit third-party systems.
 
 It does not mirror or redistribute mod files.
 
+See `docs/SAFETY_SCOPE.md` and `docs/LOCAL_LAB.md` for the defensive local lab
+scope.
+
 ## Status
 
 Initial development and API integration.

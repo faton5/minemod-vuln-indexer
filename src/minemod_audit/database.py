@@ -32,10 +32,7 @@ class DataStore:
         *,
         key: Callable[[T], str],
     ) -> None:
-        payloads = [
-            {"kind": kind, "key": key(item), "payload": item.model_dump(mode="json")}
-            for item in items
-        ]
+        payloads = _deduplicate_payloads(kind, items, key=key)
         with self.engine.begin() as connection:
             connection.execute(delete(records).where(records.c.kind == kind))
             if payloads:
@@ -48,10 +45,7 @@ class DataStore:
         *,
         key: Callable[[T], str],
     ) -> None:
-        payloads = [
-            {"kind": kind, "key": key(item), "payload": item.model_dump(mode="json")}
-            for item in items
-        ]
+        payloads = _deduplicate_payloads(kind, items, key=key)
         with self.engine.begin() as connection:
             for payload in payloads:
                 connection.execute(
@@ -73,3 +67,20 @@ class DataStore:
         with self.engine.connect() as connection:
             rows = connection.execute(statement).all()
         return [dict(row.payload) for row in rows]
+
+
+def _deduplicate_payloads[ModelT: BaseModel](
+    kind: str,
+    items: Iterable[ModelT],
+    *,
+    key: Callable[[ModelT], str],
+) -> list[dict[str, Any]]:
+    payloads_by_key: dict[str, dict[str, Any]] = {}
+    for item in items:
+        payload_key = key(item)
+        payloads_by_key[payload_key] = {
+            "kind": kind,
+            "key": payload_key,
+            "payload": item.model_dump(mode="json"),
+        }
+    return list(payloads_by_key.values())

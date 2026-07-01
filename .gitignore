@@ -8,6 +8,7 @@ __pycache__/
 cache/
 output/
 data/
+logs/
 *.db
 build/
 dist/
