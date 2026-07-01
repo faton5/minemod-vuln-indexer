@@ -174,7 +174,7 @@ class GitHubClient:
         return list(results_by_url.values())
 
     def list_recent_commits(
-        self, repository: str, *, since: str, per_page: int = 30
+        self, repository: str, *, since: str, per_page: int = 100
     ) -> list[dict[str, Any]]:
         owner, repo = repository.split("/", maxsplit=1)
         payload = self.http.get_json(
@@ -188,13 +188,18 @@ class GitHubClient:
         payload = self.http.get_json(f"/repos/{owner}/{repo}/commits/{sha}")
         return dict(payload)
 
+    def get_pull_request(self, repository: str, pull_number: int) -> dict[str, Any]:
+        owner, repo = repository.split("/", maxsplit=1)
+        payload = self.http.get_json(f"/repos/{owner}/{repo}/pulls/{pull_number}")
+        return dict(payload)
+
     def list_pull_request_commits(self, repository: str, pull_number: int) -> list[dict[str, Any]]:
         owner, repo = repository.split("/", maxsplit=1)
         payload = self.http.get_json(f"/repos/{owner}/{repo}/pulls/{pull_number}/commits")
         return [dict(item) for item in payload]
 
     def list_recent_releases(
-        self, repository: str, *, since: str, per_page: int = 30
+        self, repository: str, *, since: str, per_page: int = 100
     ) -> list[dict[str, Any]]:
         owner, repo = repository.split("/", maxsplit=1)
         payload = self.http.get_json(
@@ -217,7 +222,7 @@ class GitHubClient:
     def collect_global_advisories(self, repository: str) -> list[dict[str, Any]]:
         payload = self.http.get_json(
             "/advisories",
-            params={"query": f"repo:{repository}", "per_page": 30},
+            params={"query": f"repo:{repository}", "per_page": 100},
         )
         if isinstance(payload, list):
             return [dict(item) for item in payload]

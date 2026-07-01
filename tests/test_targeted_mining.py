@@ -112,6 +112,19 @@ class FakeGitHubClient:
         assert pull_number == 42
         return [{"sha": "abc123"}]
 
+    def get_pull_request(self, repository: str, pull_number: int) -> dict[str, Any]:
+        assert repository == "example/popular-lib"
+        assert pull_number == 42
+        return {
+            "title": "Fix dupe with server-side validation",
+            "body": "Do not trust client packets. Fixed in 1.2.4.",
+            "html_url": "https://github.com/example/popular-lib/pull/42",
+            "merged_at": "2026-06-01T00:00:00Z",
+            "merge_commit_sha": "abc123",
+            "author_association": "MEMBER",
+            "matched_terms": ["fix dupe", "server-side validation"],
+        }
+
     def get_commit_details(self, repository: str, sha: str) -> dict[str, Any]:
         assert repository == "example/popular-lib"
         assert sha == "abc123"
@@ -212,7 +225,7 @@ def test_mine_security_signals_creates_candidate_vulnerabilities(
     assert vulnerabilities == stored
     assert stored[0].mod_name == "Popular Lib"
     assert stored[0].source_type == SourceType.PULL_REQUEST
-    assert stored[0].status == "candidate"
+    assert stored[0].status == "actionable"
     assert stored[0].confidence >= 70
     assert stored[0].fixed_versions == ["1.2.4"]
     assert "validation" in stored[0].title.lower()

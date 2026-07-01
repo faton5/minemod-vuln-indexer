@@ -8,10 +8,17 @@ from minemod_audit.security import classify_impact
 
 RECENT_FIX_TERMS: tuple[str, ...] = (
     "fix dupe",
+    "fix item duplication",
     "prevent duplication",
+    "prevent duping",
     "validate packet",
     "server-side validation",
     "do not trust client",
+    "reject invalid slot",
+    "check player distance",
+    "verify sender permissions",
+    "sanitize incoming stack",
+    "client supplied amount",
     "permission check",
     "ownership check",
     "distance check",
@@ -23,6 +30,10 @@ RECENT_FIX_TERMS: tuple[str, ...] = (
     "race condition",
     "security fix",
     "exploit fix",
+    "item duplication",
+    "duping",
+    "invalid slot",
+    "sender permissions",
 )
 
 REJECTED_TERMS: tuple[str, ...] = (
@@ -142,7 +153,10 @@ def score_security_bundle(
     ):
         score += 20
         reasons.append("+20 server-side validation diff")
-    if bundle.maintainer_confirmation:
+    confirmed_by_maintainer = (
+        bundle.maintainer_confirmed_security_impact or bundle.maintainer_confirmation
+    )
+    if confirmed_by_maintainer:
         score += 15
         reasons.append("+15 maintainer confirmation")
     if bundle.fixed_versions:

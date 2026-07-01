@@ -913,8 +913,10 @@ def _bundles_from_advisories(
                 published_at=str(advisory.get("published_at") or ""),
                 updated_at=updated_at or None,
                 matched_terms=detect_matched_terms(text),
-                fixed_versions=_as_string_list(advisory.get("fixed_versions")),
-                affected_versions=_as_string_list(advisory.get("affected_versions")),
+                fixed_versions=_advisory_fixed_versions(advisory),
+                affected_versions=_advisory_affected_versions(advisory),
+                maintainer_confirmation=True,
+                maintainer_confirmed_security_impact=True,
                 reasons=["advisory"],
             )
         )
@@ -933,14 +935,28 @@ def _bundles_from_pull_requests(
     for item in pull_requests:
         url = str(item.get("html_url") or "")
         pull_number = _number_from_github_url(url)
+        pull_details = github.get_pull_request(repository, pull_number) if pull_number else {}
+        pull = {**item, **pull_details}
         commits = github.list_pull_request_commits(repository, pull_number) if pull_number else []
-        commit_sha = str(commits[0].get("sha") or "") if commits else ""
-        commit_details = github.get_commit_details(repository, commit_sha) if commit_sha else {}
-        changed_files, patches = _changed_files_and_patches(commit_details)
-        release = _matching_release(releases, commit_sha, item)
+        commit_shas = _unique_strings([str(commit.get("sha") or "") for commit in commits])
+        merge_commit_sha = str(pull.get("merge_commit_sha") or "")
+        commit_sha = merge_commit_sha or (commit_shas[-1] if commit_shas else "")
+        detail_shas = _unique_strings([commit_sha, *commit_shas])
+        commit_details_by_sha = {
+            sha: github.get_commit_details(repository, sha) for sha in detail_shas if sha
+        }
+        changed_files, patches = _combined_changed_files_and_patches(
+            list(commit_details_by_sha.values())
+        )
+        release = _matching_release(
+            releases,
+            commit_shas=detail_shas,
+            pull_number=pull_number,
+            pull_url=url,
+        )
         release_text = _release_text(release)
-        body = str(item.get("body") or "")
-        title = str(item.get("title") or "")
+        body = str(pull.get("body") or "")
+        title = str(pull.get("title") or "")
         fixed_versions = infer_fixed_versions(f"{title}\n{body}\n{release_text}")
         release_version = (
             str(release.get("tag_name") or release.get("name") or "") if release else ""
@@ -948,31 +964,39 @@ def _bundles_from_pull_requests(
         if release_version:
             fixed_versions = sorted(set([*fixed_versions, release_version]))
         patch_summary = summarize_patch(changed_files, patches)
+        author_is_maintainer = _author_is_maintainer(pull)
+        maintainer_confirmed = _maintainer_confirmed_security_impact(
+            pull,
+            matched_terms=detect_matched_terms(f"{title}\n{body}\n{release_text}"),
+            has_release=bool(release),
+        )
+        commit_details = commit_details_by_sha.get(commit_sha, {})
         bundles.append(
             SecurityEvidenceBundle(
                 mod_project_id=mod.project_id,
                 mod_name=mod.name,
                 repository=repository,
                 pull_request_url=url or None,
-                pull_request_merged_at=str(item.get("closed_at") or item.get("updated_at") or ""),
+                pull_request_merged_at=str(pull.get("merged_at") or ""),
                 commit_sha=commit_sha or None,
                 commit_url=str(commit_details.get("html_url") or "") or None,
                 release_url=str(release.get("html_url") or "") if release else None,
                 release_version=release_version or None,
-                published_at=str(item.get("created_at") or ""),
-                updated_at=str(item.get("updated_at") or ""),
+                published_at=str(pull.get("created_at") or ""),
+                updated_at=str(pull.get("updated_at") or ""),
                 matched_terms=sorted(
                     set(
                         [
-                            *_as_string_list(item.get("matched_terms")),
+                            *_as_string_list(pull.get("matched_terms")),
                             *detect_matched_terms(f"{title}\n{body}\n{release_text}"),
                         ]
                     )
                 ),
                 changed_files=changed_files,
                 patch_summary=patch_summary,
-                maintainer_confirmation=str(item.get("author_association") or "").lower()
-                in {"owner", "member", "collaborator"},
+                author_is_maintainer=author_is_maintainer,
+                maintainer_confirmed_security_impact=maintainer_confirmed,
+                maintainer_confirmation=maintainer_confirmed,
                 fixed_versions=fixed_versions,
                 reasons=["server_validation_diff"] if patch_adds_server_validation(patches) else [],
             )
@@ -998,7 +1022,7 @@ def _bundles_from_commits(
         sha = str(item.get("sha") or "")
         details = github.get_commit_details(repository, sha) if sha else item
         changed_files, patches = _changed_files_and_patches(details)
-        release = _matching_release(releases, sha, item)
+        release = _matching_release(releases, commit_shas=[sha], pull_number=None, pull_url=None)
         release_version = (
             str(release.get("tag_name") or release.get("name") or "") if release else ""
         )
@@ -1082,8 +1106,13 @@ def _bundles_from_issues(
                         ]
                     )
                 ),
-                maintainer_confirmation=str(item.get("author_association") or "").lower()
-                in {"owner", "member", "collaborator"},
+                author_is_maintainer=_author_is_maintainer(item),
+                maintainer_confirmed_security_impact=_labels_confirm_security_impact(
+                    _as_dict_list(item.get("labels"))
+                ),
+                maintainer_confirmation=_labels_confirm_security_impact(
+                    _as_dict_list(item.get("labels"))
+                ),
                 reasons=[
                     str(label.get("name") or "")
                     for label in _as_dict_list(item.get("labels"))
@@ -1116,7 +1145,7 @@ def _vulnerability_from_bundle(bundle: SecurityEvidenceBundle) -> Vulnerability:
         prerequisites=bundle.prerequisites,
         affected_versions=bundle.affected_versions,
         fixed_versions=bundle.fixed_versions,
-        status="candidate",
+        status=bundle.status,
         confidence=bundle.confidence,
         evidence=[
             value
@@ -1194,6 +1223,18 @@ def _changed_files_and_patches(details: dict[str, object]) -> tuple[list[str], l
     return changed_files, patches
 
 
+def _combined_changed_files_and_patches(
+    details_items: list[dict[str, object]],
+) -> tuple[list[str], list[str]]:
+    changed_files: list[str] = []
+    patches: list[str] = []
+    for details in details_items:
+        item_files, item_patches = _changed_files_and_patches(details)
+        changed_files.extend(item_files)
+        patches.extend(item_patches)
+    return _unique_strings(changed_files), patches
+
+
 def _as_string_list(value: object) -> list[str]:
     if not isinstance(value, list):
         return []
@@ -1206,18 +1247,87 @@ def _as_dict_list(value: object) -> list[dict[str, object]]:
     return [item for item in value if isinstance(item, dict)]
 
 
+def _advisory_fixed_versions(advisory: dict[str, object]) -> list[str]:
+    fixed_versions = _as_string_list(advisory.get("fixed_versions"))
+    for vulnerability in _as_dict_list(advisory.get("vulnerabilities")):
+        first_patched = vulnerability.get("first_patched_version")
+        if isinstance(first_patched, dict):
+            version = first_patched.get("identifier") or first_patched.get("version")
+        else:
+            version = first_patched
+        if version:
+            fixed_versions.append(str(version))
+    return _unique_strings(fixed_versions)
+
+
+def _advisory_affected_versions(advisory: dict[str, object]) -> list[str]:
+    affected_versions = _as_string_list(advisory.get("affected_versions"))
+    for vulnerability in _as_dict_list(advisory.get("vulnerabilities")):
+        version_range = vulnerability.get("vulnerable_version_range")
+        if version_range:
+            affected_versions.append(str(version_range))
+    return _unique_strings(affected_versions)
+
+
+def _author_is_maintainer(payload: dict[str, object]) -> bool:
+    return str(payload.get("author_association") or "").lower() in {
+        "owner",
+        "member",
+        "collaborator",
+    }
+
+
+def _labels_confirm_security_impact(labels: list[dict[str, object]]) -> bool:
+    label_names = {str(label.get("name") or "").lower() for label in labels}
+    return any(
+        label in label_names
+        for label in {
+            "security",
+            "confirmed",
+            "security confirmed",
+            "vulnerability",
+        }
+    )
+
+
+def _maintainer_confirmed_security_impact(
+    pull: dict[str, object],
+    *,
+    matched_terms: list[str],
+    has_release: bool,
+) -> bool:
+    labels = _as_dict_list(pull.get("labels"))
+    if _labels_confirm_security_impact(labels):
+        return True
+    return bool(
+        has_release or (pull.get("merged_at") and _author_is_maintainer(pull) and matched_terms)
+    )
+
+
 def _matching_release(
     releases: list[dict[str, object]],
-    commit_sha: str,
-    source: dict[str, object],
+    *,
+    commit_shas: list[str],
+    pull_number: int | None,
+    pull_url: str | None,
 ) -> dict[str, object]:
-    source_text = " ".join(str(source.get(field) or "") for field in ("title", "body"))
-    source_terms = detect_matched_terms(source_text)
+    normalized_shas = [sha.lower() for sha in commit_shas if sha]
+    pull_markers = []
+    if pull_number is not None:
+        pull_markers.extend(
+            [
+                f"#{pull_number}",
+                f"/pull/{pull_number}",
+                f"pull/{pull_number}",
+            ]
+        )
+    if pull_url:
+        pull_markers.append(pull_url.lower())
     for release in releases:
-        release_text = _release_text(release)
-        if commit_sha and commit_sha in release_text:
+        release_text = _release_text(release).lower()
+        if any(sha in release_text for sha in normalized_shas):
             return release
-        if source_terms and any(term in release_text.lower() for term in source_terms):
+        if any(marker in release_text for marker in pull_markers):
             return release
     return {}
 

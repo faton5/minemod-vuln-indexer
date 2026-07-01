@@ -183,6 +183,8 @@ class SecurityEvidenceBundle(BaseModel):
     matched_terms: list[str] = Field(default_factory=list)
     changed_files: list[str] = Field(default_factory=list)
     patch_summary: str | None = None
+    author_is_maintainer: bool = False
+    maintainer_confirmed_security_impact: bool = False
     maintainer_confirmation: bool = False
     affected_versions: list[str] = Field(default_factory=list)
     fixed_versions: list[str] = Field(default_factory=list)
