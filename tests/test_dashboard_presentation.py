@@ -73,6 +73,23 @@ def test_missing_fields_and_null_urls_are_safe() -> None:
     assert prepared.frame.loc[0, "tags"] == ""
 
 
+def test_table_preparation_keeps_streamlit_columns_type_stable() -> None:
+    prepared = prepare_table(
+        [
+            {"requires_manual_review": True, "confidence": 120},
+            {"requires_manual_review": False, "confidence": None},
+            {"requires_manual_review": None, "confidence": "75"},
+        ],
+        column_order=["requires_manual_review", "confidence"],
+        hidden_fields=set(),
+    )
+
+    assert prepared.frame["requires_manual_review"].tolist() == ["Yes", "No", ""]
+    assert prepared.frame.loc[0, "confidence"] == 100.0
+    assert prepared.frame["confidence"].isna().iloc[1]
+    assert prepared.frame.loc[2, "confidence"] == 75.0
+
+
 def test_number_and_url_formatting() -> None:
     assert format_compact_number(1_250_000) == "1.2 M"
     assert format_compact_number(350_000) == "350 k"
