@@ -1,60 +1,58 @@
 from __future__ import annotations
 
-import os
+# ruff: noqa: E402,I001
+
+import sys
 from pathlib import Path
 
 import streamlit as st
 
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
 from dashboard.components.metrics import render_overview_metrics
+from dashboard.components.page import (
+    configure_page,
+    dashboard_database,
+    render_sidebar_database_controls,
+)
 from dashboard.data import queries
 
-
-def dashboard_database() -> Path:
-    configured = os.environ.get("MINEMOD_DASHBOARD_DATABASE", "data/minemod.sqlite")
-    return Path(configured)
-
-
-st.set_page_config(
-    page_title="MineModVulnIndexer Dashboard",
-    page_icon="",
-    layout="wide",
-)
+configure_page("Dashboard")
 
 st.title("MineModVulnIndexer")
 st.caption("Read-only local dashboard backed by SQLite. No crawler or API call runs on page load.")
 
 database = dashboard_database()
-st.sidebar.info(f"Database: `{database}`")
-if st.sidebar.button("Refresh data"):
-    st.cache_data.clear()
-    st.rerun()
-
+render_sidebar_database_controls(database)
 if not database.exists():
-    st.warning(
-        "SQLite database not found yet. Run a crawler command first, then refresh this page."
-    )
+    st.warning("SQLite database not found yet. Run a crawler command first, then refresh.")
     st.stop()
 
 stats = queries.overview_stats(database)
 render_overview_metrics(stats)
 
-st.subheader("Provider status")
-provider_projects = queries.load_records(database, "provider_projects")
-provider_counts = queries.counts_by(provider_projects, "provider")
-st.bar_chart(provider_counts)
-
-st.subheader("Vulnerability distribution")
 vulnerabilities = queries.load_records(database, "vulnerabilities")
-left, right = st.columns(2)
-with left:
-    st.caption("By severity")
-    st.bar_chart(queries.counts_by(vulnerabilities, "severity"))
-with right:
-    st.caption("By impact category")
-    st.bar_chart(queries.counts_by(vulnerabilities, "impact_category"))
-
-st.subheader("Finding status")
 findings = queries.load_records(database, "findings")
-st.bar_chart(queries.counts_by(findings, "status"))
+projects = queries.load_records(database, "provider_projects")
 
-st.caption(f"Last successful run: {stats.last_successful_run or 'unknown'}")
+left, right = st.columns(2, gap="large")
+with left:
+    with st.container(border=True):
+        st.subheader("Vulnerabilities by severity")
+        st.caption("Severity distribution across indexed public advisories and candidates.")
+        st.bar_chart(queries.counts_by(vulnerabilities, "severity"))
+    with st.container(border=True):
+        st.subheader("Findings by status")
+        st.caption("Legacy exposure rows produced by version correlation.")
+        st.bar_chart(queries.counts_by(findings, "status"))
+with right:
+    with st.container(border=True):
+        st.subheader("Vulnerabilities by impact")
+        st.caption("Impact categories inferred from public evidence.")
+        st.bar_chart(queries.counts_by(vulnerabilities, "impact_category"))
+    with st.container(border=True):
+        st.subheader("Projects by provider")
+        st.caption("Provider source coverage in the current local database.")
+        st.bar_chart(queries.counts_by(projects, "provider"))
