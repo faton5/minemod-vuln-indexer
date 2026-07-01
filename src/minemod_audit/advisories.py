@@ -85,6 +85,33 @@ class GitHubClient:
         signals.extend(releases if isinstance(releases, list) else releases.get("data", []))
         return signals
 
+    def search_security_issues(
+        self,
+        repository: str,
+        *,
+        terms: tuple[str, ...],
+        per_term: int = 5,
+    ) -> list[dict[str, Any]]:
+        results_by_url: dict[str, dict[str, Any]] = {}
+        for term in terms:
+            payload = self.http.get_json(
+                "/search/issues",
+                params={
+                    "q": f"repo:{repository} {term} in:title,body is:issue",
+                    "per_page": per_term,
+                },
+            )
+            for item in payload.get("items", []):
+                url = str(item.get("html_url") or item.get("url") or item.get("id"))
+                enriched = dict(item)
+                matched = set(enriched.get("matched_terms") or [])
+                matched.add(term)
+                if url in results_by_url:
+                    matched.update(results_by_url[url].get("matched_terms") or [])
+                enriched["matched_terms"] = sorted(matched)
+                results_by_url[url] = enriched
+        return list(results_by_url.values())
+
     def collect_global_advisories(self, repository: str) -> list[dict[str, Any]]:
         payload = self.http.get_json(
             "/advisories",

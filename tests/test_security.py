@@ -10,6 +10,11 @@ def test_classify_minecraft_item_duplication_impact() -> None:
     assert classify_impact("Fix item duplication with NBT payload replay") == "item_duplication"
 
 
+def test_classify_rce_requires_standalone_term() -> None:
+    assert classify_impact("Startup crash from resource pack rendering") == "other"
+    assert classify_impact("Fix RCE in deserialization path") == "remote_code_execution"
+
+
 def test_official_advisory_with_versions_has_high_confidence() -> None:
     assert confidence_for_source(SourceType.GHSA, has_version_range=True) == 100
 

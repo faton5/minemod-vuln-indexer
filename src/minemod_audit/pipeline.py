@@ -1,3 +1,4 @@
+from collections import Counter
 from pathlib import Path
 
 import httpx
@@ -18,6 +19,7 @@ from minemod_audit.models import (
     ModpackComponent,
     ModpackRelease,
     ModProject,
+    PrioritizedMod,
     RepositoryResolution,
     SourceType,
     Vulnerability,
@@ -31,8 +33,27 @@ from minemod_audit.providers.base import (
 from minemod_audit.providers.dedupe import deduplicate_provider_projects
 from minemod_audit.providers.registry import ProviderRegistry
 from minemod_audit.reports import write_reports
-from minemod_audit.repository import RepositoryCandidate, resolve_repository
+from minemod_audit.repository import (
+    RepositoryCandidate,
+    extract_github_repository,
+    resolve_repository,
+)
+from minemod_audit.security import classify_impact
 from minemod_audit.versioning import VersionDecision, is_version_affected
+
+TARGETED_SECURITY_TERMS: tuple[str, ...] = (
+    "CVE",
+    "GHSA",
+    "vulnerability",
+    "security",
+    "exploit",
+    "dupe",
+    "duplication",
+    "server crash",
+    "permission bypass",
+    "authorization",
+    "deserialization",
+)
 
 
 class Pipeline:
@@ -169,6 +190,171 @@ class Pipeline:
             nvd.close()
         vulnerabilities = deduplicate_models(vulnerabilities)
         self.store.replace_models(
+            "vulnerabilities",
+            vulnerabilities,
+            key=lambda item: item.internal_id,
+        )
+        return vulnerabilities
+
+    def prioritize_mods(self, *, top: int = 10, provider: str = "modrinth") -> list[PrioritizedMod]:
+        components = self.store.load_models("modpack_components", ModpackComponent)
+        component_counts = Counter(str(component.mod_project_id) for component in components)
+        modpack_counts = {
+            project_id: len(
+                {
+                    str(component.modpack_file_id)
+                    for component in components
+                    if str(component.mod_project_id) == project_id
+                }
+            )
+            for project_id in component_counts
+        }
+
+        existing_mods = {
+            str(mod.project_id): mod for mod in self.store.load_models("mods", ModProject)
+        }
+        ranked_project_ids = [
+            project_id
+            for project_id, _count in component_counts.most_common()
+            if project_id.startswith(f"{provider}:")
+        ]
+        if not ranked_project_ids:
+            ranked_project_ids = [
+                str(mod.project_id)
+                for mod in sorted(
+                    existing_mods.values(),
+                    key=lambda item: item.download_count,
+                    reverse=True,
+                )
+                if str(mod.project_id).startswith(f"{provider}:")
+            ]
+
+        provider_client = ProviderRegistry(
+            self.settings,
+            offline=self.offline,
+            refresh=self.refresh,
+        ).build_provider(provider)
+        prioritized: list[PrioritizedMod] = []
+        fetched_mods: list[ModProject] = []
+        try:
+            for project_id in ranked_project_ids[:top]:
+                mod = existing_mods.get(project_id)
+                provider_project_id = project_id.split(":", maxsplit=1)[1]
+                if mod is None or not (mod.source_url or mod.issues_url):
+                    project = provider_client.get_project(provider_project_id)
+                    mod = self._mod_from_provider_project(project)
+                    fetched_mods.append(mod)
+                dependency_count = component_counts.get(project_id, 0)
+                modpack_count = modpack_counts.get(project_id, 0)
+                repository = extract_github_repository(mod.source_url) or extract_github_repository(
+                    mod.issues_url
+                )
+                prioritized.append(
+                    PrioritizedMod(
+                        project_id=mod.project_id,
+                        provider=provider,
+                        provider_project_id=provider_project_id,
+                        name=mod.name,
+                        slug=mod.slug,
+                        download_count=mod.download_count,
+                        dependency_count=dependency_count,
+                        modpack_count=modpack_count,
+                        score=(dependency_count * 1000) + mod.download_count,
+                        source_url=mod.source_url,
+                        issues_url=mod.issues_url,
+                        repository=repository,
+                        requires_manual_review=repository is None,
+                    )
+                )
+        finally:
+            provider_client.close()
+
+        if fetched_mods:
+            self.store.append_models("mods", fetched_mods, key=lambda item: str(item.project_id))
+        prioritized.sort(key=lambda item: item.score, reverse=True)
+        self.store.replace_models(
+            "prioritized_mods",
+            prioritized,
+            key=lambda item: str(item.project_id),
+        )
+        return prioritized
+
+    def mine_security_signals(
+        self,
+        *,
+        top: int = 10,
+        terms: tuple[str, ...] = TARGETED_SECURITY_TERMS,
+        per_term: int = 5,
+    ) -> list[Vulnerability]:
+        prioritized = self.store.load_models("prioritized_mods", PrioritizedMod)
+        if not prioritized:
+            prioritized = self.prioritize_mods(top=top)
+        targets = sorted(prioritized, key=lambda item: item.score, reverse=True)[:top]
+        github = GitHubClient(
+            token=self.settings.github_token,
+            cache_directory=self.settings.cache_directory,
+            timeout_seconds=self.settings.timeout_seconds,
+            offline=self.offline,
+            refresh=self.refresh,
+        )
+        vulnerabilities: list[Vulnerability] = []
+        repositories: list[RepositoryResolution] = []
+        try:
+            for target in targets:
+                repository = target.repository
+                source = "prioritized_mods"
+                evidence = target.source_url or target.issues_url or ""
+                if repository is None:
+                    candidates = [
+                        RepositoryCandidate(
+                            repository=str(raw.get("full_name")),
+                            score=_score_prioritized_repository_candidate(target, raw),
+                            source="github_search",
+                        )
+                        for raw in github.search_repositories(target.name, target.slug, [])
+                    ]
+                    resolution = resolve_repository(
+                        _mod_from_prioritized(target),
+                        overrides={},
+                        candidates=candidates,
+                    )
+                    repository = resolution.repository
+                else:
+                    resolution = RepositoryResolution(
+                        mod_project_id=target.project_id,
+                        mod_name=target.name,
+                        repository=repository,
+                        confidence=100,
+                        status="resolved",
+                        source=source,
+                        evidence=evidence,
+                    )
+                repositories.append(resolution)
+                if repository is None:
+                    continue
+                for raw in github.search_security_issues(
+                    repository,
+                    terms=terms,
+                    per_term=per_term,
+                ):
+                    vulnerabilities.append(
+                        _vulnerability_from_security_issue(target, repository, raw)
+                    )
+        finally:
+            github.close()
+
+        vulnerabilities = deduplicate_models(vulnerabilities)
+        self.store.append_models(
+            "repositories",
+            repositories,
+            key=lambda item: str(item.mod_project_id),
+        )
+        self.store.append_models(
+            "security_signals",
+            vulnerabilities,
+            key=lambda item: item.internal_id,
+        )
+        self.store.append_models(
             "vulnerabilities",
             vulnerabilities,
             key=lambda item: item.internal_id,
@@ -396,6 +582,8 @@ class Pipeline:
                 fixed_rule = (
                     vulnerability.fixed_versions[0] if vulnerability.fixed_versions else None
                 )
+                if affected_rule is None and fixed_rule is None:
+                    continue
                 decision = is_version_affected(
                     component_version,
                     affected=affected_rule,
@@ -465,3 +653,66 @@ def _score_repository_candidate(mod: ModProject, raw: dict[str, object]) -> int:
     if str(raw.get("archived")).lower() == "false":
         score += 5
     return score
+
+
+def _score_prioritized_repository_candidate(mod: PrioritizedMod, raw: dict[str, object]) -> int:
+    score = 0
+    full_name = str(raw.get("full_name") or "").lower()
+    name = str(raw.get("name") or "").lower()
+    if name in {mod.slug.lower(), mod.name.lower().replace(" ", "-")}:
+        score += 60
+    if mod.slug.lower() in full_name:
+        score += 20
+    if str(raw.get("archived")).lower() == "false":
+        score += 5
+    return score
+
+
+def _mod_from_prioritized(mod: PrioritizedMod) -> ModProject:
+    return ModProject(
+        project_id=mod.project_id,
+        provider=mod.provider,
+        provider_project_id=mod.provider_project_id,
+        name=mod.name,
+        slug=mod.slug,
+        download_count=mod.download_count,
+        source_url=mod.source_url,
+        issues_url=mod.issues_url,
+    )
+
+
+def _vulnerability_from_security_issue(
+    mod: PrioritizedMod,
+    repository: str,
+    raw: dict[str, object],
+) -> Vulnerability:
+    title = str(raw.get("title") or "Untitled security signal")
+    body = str(raw.get("body") or "")
+    url = str(raw.get("html_url") or raw.get("url") or "")
+    raw_matched_terms = raw.get("matched_terms", [])
+    matched_terms = (
+        [str(term) for term in raw_matched_terms]
+        if isinstance(raw_matched_terms, (list, tuple, set))
+        else []
+    )
+    description_parts = [body]
+    if matched_terms:
+        description_parts.append(f"Matched terms: {', '.join(matched_terms)}")
+    if raw.get("state"):
+        description_parts.append(f"GitHub issue state: {raw.get('state')}")
+    text = "\n".join(description_parts)
+    return Vulnerability(
+        internal_id=f"issue:{url or raw.get('id') or title}",
+        mod_project_id=mod.project_id,
+        mod_name=mod.name,
+        repository=repository,
+        title=title,
+        description=text,
+        source_type=SourceType.ISSUE,
+        source_url=url or f"https://github.com/{repository}/issues",
+        impact_category=classify_impact(f"{title}\n{text}"),
+        status="candidate",
+        confidence=60,
+        evidence=[url] if url else [f"https://github.com/{repository}/issues"],
+        requires_manual_review=True,
+    )

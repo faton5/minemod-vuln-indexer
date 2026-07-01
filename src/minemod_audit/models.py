@@ -142,6 +142,22 @@ class ModpackComponent(BaseModel):
     required: bool = True
 
 
+class PrioritizedMod(BaseModel):
+    project_id: int | str
+    provider: str
+    provider_project_id: str
+    name: str
+    slug: str
+    download_count: int = 0
+    dependency_count: int = 0
+    modpack_count: int = 0
+    score: int = 0
+    source_url: str | None = None
+    issues_url: str | None = None
+    repository: str | None = None
+    requires_manual_review: bool = False
+
+
 class Finding(BaseModel):
     mod_name: str
     mod_version: str

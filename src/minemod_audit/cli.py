@@ -142,6 +142,40 @@ def collect_advisories(
     typer.echo(f"Collected {len(vulnerabilities)} vulnerability signals")
 
 
+@app.command("prioritize-mods")
+def prioritize_mods(
+    top: Annotated[int, typer.Option("--top", min=1)] = 10,
+    provider: Annotated[str, typer.Option("--provider")] = "modrinth",
+    database: DatabaseOption = None,
+    output_directory: OutputOption = None,
+    resume: ResumeOption = False,
+    refresh: RefreshOption = False,
+    offline: OfflineOption = False,
+    verbose: VerboseOption = False,
+) -> None:
+    del resume
+    pipeline = _pipeline(database, output_directory, offline, refresh, verbose)
+    prioritized = pipeline.prioritize_mods(top=top, provider=provider)
+    typer.echo(f"Prioritized {len(prioritized)} mods")
+
+
+@app.command("mine-security-signals")
+def mine_security_signals(
+    top: Annotated[int, typer.Option("--top", min=1)] = 10,
+    per_term: Annotated[int, typer.Option("--per-term", min=1, max=20)] = 5,
+    database: DatabaseOption = None,
+    output_directory: OutputOption = None,
+    resume: ResumeOption = False,
+    refresh: RefreshOption = False,
+    offline: OfflineOption = False,
+    verbose: VerboseOption = False,
+) -> None:
+    del resume
+    pipeline = _pipeline(database, output_directory, offline, refresh, verbose)
+    vulnerabilities = pipeline.mine_security_signals(top=top, per_term=per_term)
+    typer.echo(f"Mined {len(vulnerabilities)} candidate security signals")
+
+
 @app.command("index-modpacks")
 def index_modpacks(
     limit: Annotated[int, typer.Option("--limit", min=1)] = 500,
@@ -230,6 +264,32 @@ def run_all(
     pipeline.correlate()
     pipeline.report()
     typer.echo("Run complete")
+
+
+@app.command("targeted-run")
+def targeted_run(
+    limit_modpacks: Annotated[int, typer.Option("--limit-modpacks", min=1)] = 20,
+    top: Annotated[int, typer.Option("--top", min=1)] = 10,
+    per_term: Annotated[int, typer.Option("--per-term", min=1, max=20)] = 5,
+    providers: Annotated[str, typer.Option("--providers")] = "modrinth",
+    database: DatabaseOption = None,
+    output_directory: OutputOption = None,
+    resume: ResumeOption = False,
+    refresh: RefreshOption = False,
+    offline: OfflineOption = False,
+    verbose: VerboseOption = False,
+) -> None:
+    del resume
+    pipeline = _pipeline(database, output_directory, offline, refresh, verbose)
+    pipeline.collect_modpacks(limit=limit_modpacks, provider=providers)
+    prioritized = pipeline.prioritize_mods(top=top, provider=providers)
+    vulnerabilities = pipeline.mine_security_signals(top=top, per_term=per_term)
+    pipeline.correlate()
+    pipeline.report()
+    typer.echo(
+        f"Targeted run complete: {len(prioritized)} prioritized mods, "
+        f"{len(vulnerabilities)} candidate security signals"
+    )
 
 
 if __name__ == "__main__":

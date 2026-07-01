@@ -1,3 +1,4 @@
+import re
 from collections.abc import Iterable
 from typing import Any
 
@@ -22,9 +23,15 @@ _IMPACT_TERMS: list[tuple[str, tuple[str, ...]]] = [
 def classify_impact(text: str) -> str:
     haystack = text.lower()
     for impact, terms in _IMPACT_TERMS:
-        if any(term in haystack for term in terms):
+        if any(_contains_term(haystack, term) for term in terms):
             return impact
     return ImpactCategory.OTHER.value
+
+
+def _contains_term(haystack: str, term: str) -> bool:
+    if len(term) <= 3 and term.isalnum():
+        return re.search(rf"\b{re.escape(term)}\b", haystack) is not None
+    return term in haystack
 
 
 def confidence_for_source(source_type: SourceType, *, has_version_range: bool = False) -> int:

@@ -58,6 +58,7 @@ minemod-audit collect-modpacks --provider modrinth --limit 100
 minemod-audit collect-mods --provider all --limit 20
 minemod-audit run --providers modrinth
 minemod-audit run --providers all
+minemod-audit targeted-run --limit-modpacks 20 --top 3 --per-term 5
 minemod-audit dashboard
 ```
 
@@ -77,6 +78,24 @@ Modrinth and CurseForge do not expose identical catalogs. A project can exist
 on one platform but not the other, or expose different metadata. MineModVulnIndexer
 keeps provider IDs and raw metadata so conflicts can be reviewed instead of
 silently overwritten.
+
+## Targeted vulnerability discovery
+
+For practical review, prefer the targeted workflow over broad crawling:
+
+```bash
+minemod-audit targeted-run --limit-modpacks 20 --top 3 --per-term 5
+```
+
+This indexes popular modpacks, ranks the mods that appear most often as
+dependencies, fetches their detailed provider metadata, resolves official
+GitHub repositories when possible, then searches public GitHub issues for
+security terms such as CVE, GHSA, vulnerability, exploit, dupe and server
+crash.
+
+Signals found from GitHub issues are stored as candidate vulnerabilities. They
+require manual review until an official advisory or reliable affected-version
+range is available.
 
 ## Local dashboard
 
