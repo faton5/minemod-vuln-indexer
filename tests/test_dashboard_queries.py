@@ -1,6 +1,8 @@
 from pathlib import Path
 
 from dashboard.data import queries
+from minemod_audit.ai.cache import GeminiAnalysisCache
+from minemod_audit.ai.schemas import GeminiSecurityAnalysis
 from minemod_audit.database import DataStore
 from minemod_audit.models import (
     Finding,
@@ -226,3 +228,39 @@ def test_load_records_refreshes_after_database_changes(tmp_path: Path) -> None:
     rows = queries.load_records(database, "mods")
 
     assert len(rows) == 2
+
+
+def test_dashboard_counts_and_ai_usage(tmp_path: Path) -> None:
+    database = tmp_path / "dashboard.sqlite"
+    seed_dashboard_database(database)
+    cache = GeminiAnalysisCache(DataStore(database))
+    analysis = GeminiSecurityAnalysis(
+        verdict="insufficient_evidence",
+        confidence=30,
+        category="unknown",
+        affected_version_confidence=50,
+        fixed_version_confidence=50,
+        public_information_level="none",
+        requires_manual_review=True,
+        concise_explanation="Not enough public evidence.",
+    )
+    cache.put(
+        evidence_hash="hash-1",
+        candidate_id="candidate-1",
+        model="gemini-test",
+        prompt_version="security-triage-v1",
+        schema_version="schema-v1",
+        analysis=analysis,
+        input_token_count=100,
+        output_token_count=20,
+        status="valid",
+    )
+
+    counts = queries.record_kind_counts(database)
+    usage = queries.ai_usage_stats(database)
+
+    assert counts["mods"] == 1
+    assert counts["gemini_analysis_cache"] == 1
+    assert usage["cached_analyses"] == 1
+    assert usage["input_tokens"] == 100
+    assert usage["output_tokens"] == 20

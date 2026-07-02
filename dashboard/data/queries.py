@@ -60,7 +60,10 @@ def sanitize_payload(payload: Any) -> Any:
     if isinstance(payload, dict):
         sanitized: dict[str, Any] = {}
         for key, value in payload.items():
-            if any(secret in key.lower().replace("-", "_") for secret in SENSITIVE_KEYS):
+            normalized_key = key.lower().replace("-", "_")
+            if normalized_key.endswith("_token_count"):
+                sanitized[key] = sanitize_payload(value)
+            elif any(secret in normalized_key for secret in SENSITIVE_KEYS):
                 sanitized[key] = "<redacted>"
             else:
                 sanitized[key] = sanitize_payload(value)
@@ -129,6 +132,65 @@ def counts_by(records_payload: list[RecordPayload], field: str) -> dict[str, int
         else:
             counter[str(value or "unknown")] += 1
     return dict(counter)
+
+
+def record_kind_counts(database_path: Path) -> dict[str, int]:
+    engine = create_read_engine(database_path)
+    if engine is None:
+        return {}
+    statement = select(records.c.kind)
+    counter: Counter[str] = Counter()
+    with engine.connect() as connection:
+        for row in connection.execute(statement):
+            counter[str(row.kind)] += 1
+    return dict(counter)
+
+
+def ai_usage_stats(database_path: Path) -> dict[str, int]:
+    entries = load_records(database_path, "gemini_analysis_cache")
+    candidates = load_records(database_path, "recent_security_fix_candidates")
+    return {
+        "cached_analyses": len(entries),
+        "annotated_candidates": sum(1 for item in candidates if item.get("ai_verdict")),
+        "cache_hits": sum(1 for item in candidates if item.get("ai_cache_hit")),
+        "input_tokens": sum(int(item.get("input_token_count") or 0) for item in entries),
+        "output_tokens": sum(int(item.get("output_token_count") or 0) for item in entries),
+    }
+
+
+def latest_log_summary(log_directory: Path) -> dict[str, str]:
+    if not log_directory.exists():
+        return {
+            "name": "none",
+            "status": "not_started",
+            "last_line": "No logs directory found.",
+            "updated_at": "",
+        }
+    logs = sorted(
+        log_directory.glob("*crawl-*.out.log"),
+        key=lambda item: item.stat().st_mtime,
+        reverse=True,
+    )
+    if not logs:
+        return {
+            "name": "none",
+            "status": "not_started",
+            "last_line": "No crawler log found.",
+            "updated_at": "",
+        }
+    latest = logs[0]
+    lines = latest.read_text(encoding="utf-8", errors="replace").splitlines()
+    non_empty = [line for line in lines if line.strip()]
+    last_line = non_empty[-1] if non_empty else "Log is empty."
+    status = "running"
+    if any(line.startswith("EXIT") for line in non_empty):
+        status = "complete" if any(line.endswith(" 0") for line in non_empty) else "failed"
+    return {
+        "name": latest.name,
+        "status": status,
+        "last_line": last_line,
+        "updated_at": latest.stat().st_mtime_ns.__str__(),
+    }
 
 
 def filter_records(
@@ -341,4 +403,4 @@ def _format_database_size(database_path: Path) -> str:
         return f"{size / (1024 * 1024):.1f} MB"
     if size >= 1024:
         return f"{size / 1024:.1f} kB"
-    return f"{size} B"
+    return str(f"{size} B")
