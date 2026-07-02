@@ -86,6 +86,34 @@ def test_curseforge_modpack_release_resolves_exact_component_metadata(
     assert component.requires_manual_review is False
 
 
+def test_curseforge_modpack_release_continues_when_download_url_is_forbidden(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    client = CurseForgeClient.__new__(CurseForgeClient)
+    request = httpx.Request("GET", "https://api.curseforge.com/v1/download-url")
+    response = httpx.Response(403, request=request)
+
+    def forbidden_download_url(project_id: int, file_id: int) -> str | None:
+        del project_id, file_id
+        raise httpx.HTTPStatusError("Forbidden", request=request, response=response)
+
+    monkeypatch.setattr(client, "get_download_url", forbidden_download_url)
+
+    release, components = client.index_modpack_release(
+        modpack=Modpack(
+            project_id="curseforge:1234",
+            provider="curseforge",
+            provider_project_id="1234",
+            name="All the Mods 10",
+            slug="atm10",
+        ),
+        file_payload={"id": 5001, "displayName": "ATM10 1.0.0"},
+    )
+
+    assert components == []
+    assert release.unresolved_reason == "download URL unavailable: HTTP 403"
+
+
 def _manifest_archive(manifest: dict[str, Any]) -> bytes:
     buffer = io.BytesIO()
     with zipfile.ZipFile(buffer, "w") as archive:

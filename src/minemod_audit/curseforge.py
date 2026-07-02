@@ -166,7 +166,11 @@ class CurseForgeClient:
             download_url=None,
         )
         curseforge_project_id = int(modpack.provider_project_id or modpack.project_id)
-        download_url = self.get_download_url(curseforge_project_id, file_id)
+        try:
+            download_url = self.get_download_url(curseforge_project_id, file_id)
+        except httpx.HTTPStatusError as exc:
+            release.unresolved_reason = f"download URL unavailable: HTTP {exc.response.status_code}"
+            return release, []
         if not download_url:
             release.unresolved_reason = "download URL unavailable"
             return release, []
