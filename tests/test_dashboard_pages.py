@@ -13,11 +13,19 @@ def test_dashboard_pages_load_with_fixture_database(
     seed_dashboard_database(database)
     monkeypatch.setenv("MINEMOD_DASHBOARD_DATABASE", str(database))
 
-    app = AppTest.from_file("dashboard/app.py", default_timeout=5).run()
+    page_paths = [
+        "dashboard/app.py",
+        "dashboard/pages/1_Vulnerabilities.py",
+        "dashboard/pages/2_Mods.py",
+        "dashboard/pages/3_Modpacks.py",
+        "dashboard/pages/4_AI.py",
+    ]
 
-    assert not app.exception
+    for page_path in page_paths:
+        app = AppTest.from_file(page_path, default_timeout=5).run()
+        assert not app.exception, page_path
 
 
 def test_legacy_dashboard_pages_are_not_in_streamlit_navigation() -> None:
-    assert not list(Path("dashboard/pages").glob("*.py"))
+    assert len(list(Path("dashboard/pages").glob("*.py"))) == 4
     assert list(Path("dashboard/legacy_pages").glob("*.py"))

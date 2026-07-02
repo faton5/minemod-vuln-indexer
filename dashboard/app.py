@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
-from typing import Any
 
 import streamlit as st
 
@@ -21,15 +20,6 @@ from dashboard.components.page import (
 from dashboard.data import queries
 
 configure_page("Dashboard")
-
-AI_VERDICT_RANK = {
-    "confirmed_public_vulnerability": 5,
-    "probable_exploitable_bug": 4,
-    "interesting_security_fix": 3,
-    "normal_bugfix": 2,
-    "insufficient_evidence": 1,
-    "unrelated": 0,
-}
 
 
 def main() -> None:
@@ -50,7 +40,7 @@ def main() -> None:
     kind_counts = queries.record_kind_counts(database)
     ai_usage = queries.ai_usage_stats(database)
     log_summary = queries.latest_log_summary(ROOT / "logs")
-    candidates = _candidate_rows(database)
+    candidates = queries.security_candidate_rows(database)
     mods = queries.load_records(database, "mods")
     modpacks = queries.load_records(database, "modpacks")
 
@@ -79,7 +69,7 @@ def _render_status_strip(
     )
 
 
-def _render_attention(candidates: list[dict[str, Any]]) -> None:
+def _render_attention(candidates: list[dict[str, object]]) -> None:
     st.subheader("A verifier")
     st.caption(
         "Liste courte des candidats utiles. Si elle est vide, le crawler n'a pas encore trouve "
@@ -108,6 +98,7 @@ def _render_attention(candidates: list[dict[str, Any]]) -> None:
             "old_version",
             "fixed_version",
             "affected_modpacks_count",
+            "exposure_status",
             "release_date",
         ],
         selection_mode="single-row",
@@ -135,8 +126,8 @@ def _render_ai_usage(ai_usage: dict[str, int]) -> None:
 
 def _render_indexed_scope(
     kind_counts: dict[str, int],
-    mods: list[dict[str, Any]],
-    modpacks: list[dict[str, Any]],
+    mods: list[dict[str, object]],
+    modpacks: list[dict[str, object]],
 ) -> None:
     st.subheader("Donnees indexees")
     left, right = st.columns([0.5, 0.5])
@@ -165,37 +156,6 @@ def _render_latest_log(log_summary: dict[str, str]) -> None:
     st.code(log_summary["last_line"], language="text")
 
 
-def _candidate_rows(database: Path) -> list[dict[str, Any]]:
-    rows = queries.load_records(database, "recent_security_fix_candidates")
-    if not rows:
-        rows = queries.load_records(database, "recent_fix_candidates")
-    enriched: list[dict[str, Any]] = []
-    for row in rows:
-        copy = dict(row)
-        affected = copy.get("affected_modpacks") or []
-        copy["affected_modpacks_count"] = len(affected) if isinstance(affected, list) else 0
-        copy["priority"] = _priority(copy)
-        enriched.append(copy)
-    return sorted(
-        enriched,
-        key=lambda item: (
-            item["priority"],
-            int(item.get("ai_confidence") or 0),
-            int(item.get("confidence") or 0),
-            item.get("release_date") or "",
-        ),
-        reverse=True,
-    )
-
-
-def _priority(row: dict[str, Any]) -> int:
-    ai_rank = AI_VERDICT_RANK.get(str(row.get("ai_verdict") or ""), 0) * 100
-    affected = row.get("affected_modpacks_count") or 0
-    base = int(row.get("confidence") or 0)
-    ai_confidence = int(row.get("ai_confidence") or 0)
-    return ai_rank + ai_confidence + base + int(affected) * 10
-
-
 def _fmt(value: int) -> str:
     return f"{value:,}".replace(",", " ")
 
@@ -206,7 +166,6 @@ def _style() -> None:
         <style>
         .block-container { padding-top: 2rem; max-width: 1280px; }
         [data-testid="stMetricValue"] { font-size: 1.8rem; }
-        [data-testid="stSidebarNav"] { display: none; }
         .stDataFrame { border: 1px solid rgba(255,255,255,.08); }
         </style>
         """,

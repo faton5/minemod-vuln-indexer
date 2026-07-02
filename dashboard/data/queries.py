@@ -158,6 +158,71 @@ def ai_usage_stats(database_path: Path) -> dict[str, int]:
     }
 
 
+AI_VERDICT_RANK = {
+    "confirmed_public_vulnerability": 5,
+    "probable_exploitable_bug": 4,
+    "interesting_security_fix": 3,
+    "normal_bugfix": 2,
+    "insufficient_evidence": 1,
+    "unrelated": 0,
+}
+
+
+def security_candidate_rows(database_path: Path) -> list[RecordPayload]:
+    rows = load_records(database_path, "recent_security_fix_candidates")
+    if not rows:
+        rows = load_records(database_path, "recent_fix_candidates")
+    enriched: list[RecordPayload] = []
+    for row in rows:
+        copy = dict(row)
+        affected = copy.get("affected_modpacks") or []
+        affected_list = affected if isinstance(affected, list) else []
+        latest_affected = sum(
+            1
+            for item in affected_list
+            if isinstance(item, dict) and item.get("latest_pack_release")
+        )
+        copy["affected_modpacks_count"] = len(affected_list)
+        copy["latest_affected_modpacks"] = latest_affected
+        copy["exposure_status"] = _exposure_status(copy, latest_affected, len(affected_list))
+        copy["priority"] = security_candidate_priority(copy)
+        copy["evidence_links_count"] = sum(
+            1
+            for field in ("repository", "issue_url", "pull_request_url", "commit_url")
+            if copy.get(field)
+        )
+        enriched.append(copy)
+    return sorted(
+        enriched,
+        key=lambda item: (
+            int(item.get("priority") or 0),
+            int(item.get("ai_confidence") or 0),
+            int(item.get("confidence") or 0),
+            str(item.get("release_date") or ""),
+        ),
+        reverse=True,
+    )
+
+
+def security_candidate_priority(row: RecordPayload) -> int:
+    ai_rank = AI_VERDICT_RANK.get(str(row.get("ai_verdict") or ""), 0) * 100
+    affected = int(row.get("affected_modpacks_count") or 0)
+    latest_affected = int(row.get("latest_affected_modpacks") or 0)
+    base = int(row.get("confidence") or 0)
+    ai_confidence = int(row.get("ai_confidence") or 0)
+    return ai_rank + ai_confidence + base + affected * 10 + latest_affected * 25
+
+
+def _exposure_status(row: RecordPayload, latest_affected: int, affected_count: int) -> str:
+    if affected_count == 0:
+        return "no_modpack_match"
+    if latest_affected > 0:
+        return "latest_pack_still_affected"
+    if row.get("fixed_version"):
+        return "old_pack_release_only"
+    return "manual_review"
+
+
 def latest_log_summary(log_directory: Path) -> dict[str, str]:
     if not log_directory.exists():
         return {

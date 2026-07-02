@@ -5,11 +5,13 @@ from minemod_audit.ai.cache import GeminiAnalysisCache
 from minemod_audit.ai.schemas import GeminiSecurityAnalysis
 from minemod_audit.database import DataStore
 from minemod_audit.models import (
+    AffectedModpack,
     Finding,
     Modpack,
     ModpackComponent,
     ModpackRelease,
     ModProject,
+    RecentSecurityFixCandidate,
     SourceType,
     Vulnerability,
 )
@@ -264,3 +266,43 @@ def test_dashboard_counts_and_ai_usage(tmp_path: Path) -> None:
     assert usage["cached_analyses"] == 1
     assert usage["input_tokens"] == 100
     assert usage["output_tokens"] == 20
+
+
+def test_security_candidate_rows_exposure_status(tmp_path: Path) -> None:
+    database = tmp_path / "dashboard.sqlite"
+    store = DataStore(database)
+    store.replace_models(
+        "recent_security_fix_candidates",
+        [
+            RecentSecurityFixCandidate(
+                candidate_id="candidate-1",
+                mod_name="Example Mod",
+                provider="curseforge",
+                provider_project_id="1234",
+                old_version="1.0.0",
+                fixed_version="1.0.1",
+                changelog_excerpt="Fix packet validation.",
+                patch_summary="Added server-side validation.",
+                potential_impact="Possible packet validation issue.",
+                confidence=70,
+                category="likely_security_fix",
+                affected_modpacks=[
+                    AffectedModpack(
+                        modpack="Example Pack",
+                        modpack_release="2.0.0",
+                        installed_version="1.0.0",
+                        fixed_version="1.0.1",
+                        same_minecraft_loader=True,
+                        latest_pack_release=True,
+                    )
+                ],
+            )
+        ],
+        key=lambda item: item.candidate_id,
+    )
+
+    rows = queries.security_candidate_rows(database)
+
+    assert rows[0]["affected_modpacks_count"] == 1
+    assert rows[0]["latest_affected_modpacks"] == 1
+    assert rows[0]["exposure_status"] == "latest_pack_still_affected"
