@@ -59,6 +59,10 @@ minemod-audit collect-mods --provider all --limit 20
 minemod-audit run --providers modrinth
 minemod-audit run --providers all
 minemod-audit targeted-run --limit-modpacks 20 --top 3 --per-term 5
+minemod-audit index-curseforge-packs --limit 200 --releases 3
+minemod-audit build-canonical-mods
+minemod-audit analyze-release-diffs --top-libraries 50
+minemod-audit hunt-release-lag
 minemod-audit dashboard
 ```
 
@@ -96,6 +100,30 @@ crash.
 Signals found from GitHub issues are stored as candidate vulnerabilities. They
 require manual review until an official advisory or reliable affected-version
 range is available.
+
+## Release lag hunting
+
+Release lag hunting is an independent passive workflow for finding modpacks that
+still ship a previous library release after a later release appears to fix a
+logic or security-sensitive bug.
+
+```bash
+minemod-audit index-curseforge-packs --limit 200 --releases 3
+minemod-audit build-canonical-mods
+minemod-audit analyze-release-diffs --top-libraries 50
+minemod-audit hunt-release-lag
+```
+
+The workflow uses CurseForge modpack manifests as the primary source for exact
+`projectID` and `fileID` component evidence. It builds canonical mod identities
+around normalized GitHub repositories when possible, then ranks libraries by the
+number of indexed modpack releases that contain them.
+
+Diff analysis compares consecutive release tags without pre-filtering commits by
+message text. It keeps changed files and relevant patch sections, and prioritizes
+server-trust boundaries such as packets, NBT, inventories, permissions, session
+state and server-side reconstruction. Findings are stored in
+`release_lag_findings` and exported to `output/release_lag_findings.json`.
 
 ## Local dashboard
 

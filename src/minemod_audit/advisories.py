@@ -219,6 +219,19 @@ class GitHubClient:
                 recent.append(dict(item))
         return recent
 
+    def list_repository_tags(self, repository: str, *, per_page: int = 100) -> list[dict[str, Any]]:
+        owner, repo = repository.split("/", maxsplit=1)
+        payload = self.http.get_json(
+            f"/repos/{owner}/{repo}/tags",
+            params={"per_page": per_page},
+        )
+        return [dict(item) for item in payload]
+
+    def compare_refs(self, repository: str, *, base: str, head: str) -> dict[str, Any]:
+        owner, repo = repository.split("/", maxsplit=1)
+        payload = self.http.get_json(f"/repos/{owner}/{repo}/compare/{base}...{head}")
+        return dict(payload)
+
     def collect_global_advisories(self, repository: str) -> list[dict[str, Any]]:
         payload = self.http.get_json(
             "/advisories",

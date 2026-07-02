@@ -10,12 +10,16 @@ from minemod_audit.curseforge import CurseForgeClient
 from minemod_audit.database import DataStore
 from minemod_audit.io import load_yaml_mapping
 from minemod_audit.models import (
+    CanonicalMod,
     Finding,
     Modpack,
     ModpackComponent,
     ModpackRelease,
     ModProject,
     PrioritizedMod,
+    ReleaseDiffCandidate,
+    ReleaseLagFinding,
+    ReleaseLagLibrary,
     RepositoryResolution,
     SecurityEvidenceBundle,
     SourceType,
@@ -30,6 +34,14 @@ from minemod_audit.providers.base import (
 )
 from minemod_audit.providers.dedupe import deduplicate_provider_projects
 from minemod_audit.providers.registry import ProviderRegistry
+from minemod_audit.release_lag import (
+    build_canonical_mods,
+    classify_release_diff,
+    correlate_release_lag,
+    matching_tag,
+    rank_libraries_by_modpack_releases,
+    sorted_release_versions,
+)
 from minemod_audit.reports import write_reports
 from minemod_audit.repository import (
     RepositoryCandidate,
@@ -427,6 +439,143 @@ class Pipeline:
     def correlate_recent_fixes(self) -> list[Finding]:
         return self.correlate()
 
+    def build_canonical_mods(self) -> list[CanonicalMod]:
+        canonicals = build_canonical_mods(
+            mods=self.store.load_models("mods", ModProject),
+            components=self.store.load_models("modpack_components", ModpackComponent),
+        )
+        self.store.replace_models(
+            "canonical_mods",
+            canonicals,
+            key=lambda item: item.canonical_id,
+        )
+        return canonicals
+
+    def rank_release_lag_libraries(self, *, top: int = 50) -> list[ReleaseLagLibrary]:
+        canonicals = self.store.load_models("canonical_mods", CanonicalMod)
+        if not canonicals:
+            canonicals = self.build_canonical_mods()
+        ranked = rank_libraries_by_modpack_releases(
+            components=self.store.load_models("modpack_components", ModpackComponent),
+            canonicals=canonicals,
+            limit=top,
+        )
+        self.store.replace_models(
+            "release_lag_libraries",
+            ranked,
+            key=lambda item: item.canonical_mod_id,
+        )
+        return ranked
+
+    def analyze_release_diffs(self, *, top_libraries: int = 50) -> list[ReleaseDiffCandidate]:
+        canonicals = self.store.load_models("canonical_mods", CanonicalMod)
+        if not canonicals:
+            canonicals = self.build_canonical_mods()
+        canonical_by_id = {item.canonical_id: item for item in canonicals}
+        ranked = self.rank_release_lag_libraries(top=top_libraries)
+        components = self.store.load_models("modpack_components", ModpackComponent)
+        components_by_canonical = _components_by_canonical(components, canonicals)
+        github = GitHubClient(
+            token=self.settings.github_token,
+            cache_directory=self.settings.cache_directory,
+            timeout_seconds=self.settings.timeout_seconds,
+            offline=self.offline,
+            refresh=self.refresh,
+        )
+        candidates: list[ReleaseDiffCandidate] = []
+        try:
+            for library in ranked:
+                canonical = canonical_by_id.get(library.canonical_mod_id)
+                if canonical is None or not canonical.github_repository:
+                    continue
+                tags = [
+                    str(item.get("name") or "")
+                    for item in github.list_repository_tags(canonical.github_repository)
+                    if item.get("name")
+                ]
+                grouped = _versions_by_branch_loader(
+                    components_by_canonical.get(canonical.canonical_id, [])
+                )
+                for (minecraft_branch, loader), versions in grouped.items():
+                    ordered = sorted_release_versions(versions)
+                    for old_version, new_version in zip(ordered, ordered[1:], strict=False):
+                        old_tag = matching_tag(old_version, tags)
+                        new_tag = matching_tag(new_version, tags)
+                        if not old_tag or not new_tag:
+                            continue
+                        comparison = github.compare_refs(
+                            canonical.github_repository,
+                            base=old_tag,
+                            head=new_tag,
+                        )
+                        files = [
+                            item for item in comparison.get("files", []) if isinstance(item, dict)
+                        ]
+                        changed_files = [
+                            str(item.get("filename") or "")
+                            for item in files
+                            if item.get("filename")
+                        ]
+                        patches = [
+                            str(item.get("patch") or "") for item in files if item.get("patch")
+                        ]
+                        commits = [
+                            item for item in comparison.get("commits", []) if isinstance(item, dict)
+                        ]
+                        fixed_commit = str(comparison.get("merge_base_commit", {}).get("sha") or "")
+                        if commits:
+                            fixed_commit = str(commits[-1].get("sha") or fixed_commit)
+                        candidates.append(
+                            classify_release_diff(
+                                canonical_mod_id=canonical.canonical_id,
+                                old_version=old_version,
+                                new_version=new_version,
+                                old_tag=old_tag,
+                                new_tag=new_tag,
+                                changed_files=changed_files,
+                                patches=patches,
+                                commit_message="\n".join(
+                                    _commit_message(commit) for commit in commits
+                                ),
+                                published_at=_comparison_published_at(commits),
+                                minecraft_branch=minecraft_branch or None,
+                                loader=loader or None,
+                                fixed_commit=fixed_commit or None,
+                            )
+                        )
+        finally:
+            github.close()
+        self.store.replace_models(
+            "release_diff_candidates",
+            candidates,
+            key=lambda item: (
+                f"{item.canonical_mod_id}:{item.minecraft_branch}:{item.loader}:"
+                f"{item.old_version}:{item.new_version}"
+            ),
+        )
+        return candidates
+
+    def hunt_release_lag(self) -> list[ReleaseLagFinding]:
+        canonicals = self.store.load_models("canonical_mods", CanonicalMod)
+        if not canonicals:
+            canonicals = self.build_canonical_mods()
+        findings = correlate_release_lag(
+            candidates=self.store.load_models("release_diff_candidates", ReleaseDiffCandidate),
+            canonicals=canonicals,
+            components=self.store.load_models("modpack_components", ModpackComponent),
+            modpacks=self.store.load_models("modpacks", Modpack),
+            releases=self.store.load_models("modpack_releases", ModpackRelease),
+        )
+        self.store.replace_models(
+            "release_lag_findings",
+            findings,
+            key=lambda item: (
+                f"{item.canonical_mod_id}:{item.modpack_name}:{item.modpack_release}:"
+                f"{item.old_version}:{item.new_version}"
+            ),
+        )
+        return findings
+
     def index_modpacks(
         self,
         *,
@@ -518,7 +667,8 @@ class Pipeline:
         try:
             modpacks = client.collect_modpacks(limit=limit, minecraft_version=minecraft_version)
             for modpack in modpacks:
-                files = client.get_files(int(modpack.project_id), page_size=releases_per_pack)
+                curseforge_project_id = int(modpack.provider_project_id or modpack.project_id)
+                files = client.get_files(curseforge_project_id, page_size=releases_per_pack)
                 for file_payload in files:
                     release, release_components = client.index_modpack_release(
                         modpack=modpack,
@@ -789,6 +939,14 @@ class Pipeline:
                 "recent_fix_candidates",
                 SecurityEvidenceBundle,
             ),
+            release_diff_candidates=self.store.load_models(
+                "release_diff_candidates",
+                ReleaseDiffCandidate,
+            ),
+            release_lag_findings=self.store.load_models(
+                "release_lag_findings",
+                ReleaseLagFinding,
+            ),
         )
 
 
@@ -804,6 +962,74 @@ def _score_repository_candidate(mod: ModProject, raw: dict[str, object]) -> int:
     if str(raw.get("archived")).lower() == "false":
         score += 5
     return score
+
+
+def _components_by_canonical(
+    components: list[ModpackComponent],
+    canonicals: list[CanonicalMod],
+) -> dict[str, list[ModpackComponent]]:
+    provider_mapping: dict[tuple[str, str], str] = {}
+    for canonical in canonicals:
+        for project_id in canonical.curseforge_project_ids:
+            provider_mapping[("curseforge", project_id)] = canonical.canonical_id
+        for project_id in canonical.modrinth_project_ids:
+            provider_mapping[("modrinth", project_id)] = canonical.canonical_id
+    grouped: dict[str, list[ModpackComponent]] = {}
+    for component in components:
+        provider, provider_id = _component_provider_identity(component)
+        canonical_id = provider_mapping.get((provider, provider_id))
+        if canonical_id is None:
+            repository = extract_github_repository(component.source_url)
+            canonical_id = (
+                f"github:{repository.lower()}"
+                if repository
+                else f"provider:{provider}:{provider_id}"
+            )
+        grouped.setdefault(canonical_id, []).append(component)
+    return grouped
+
+
+def _component_provider_identity(component: ModpackComponent) -> tuple[str, str]:
+    if component.provider and component.provider_project_id:
+        return component.provider, component.provider_project_id
+    raw_project_id = str(component.mod_project_id)
+    if ":" in raw_project_id:
+        provider, provider_id = raw_project_id.split(":", maxsplit=1)
+        return provider, provider_id
+    return component.provider or "unknown", raw_project_id
+
+
+def _versions_by_branch_loader(
+    components: list[ModpackComponent],
+) -> dict[tuple[str, str], list[str]]:
+    grouped: dict[tuple[str, str], set[str]] = {}
+    for component in components:
+        if not component.mod_version:
+            continue
+        branches = component.minecraft_versions or [""]
+        loaders = component.loaders or [""]
+        for branch in branches:
+            for loader in loaders:
+                grouped.setdefault((branch, loader), set()).add(component.mod_version)
+    return {key: list(values) for key, values in grouped.items()}
+
+
+def _commit_message(commit: dict[str, object]) -> str:
+    payload = commit.get("commit")
+    if not isinstance(payload, dict):
+        return ""
+    return str(payload.get("message") or "")
+
+
+def _comparison_published_at(commits: list[dict[str, object]]) -> str | None:
+    for commit in reversed(commits):
+        payload = commit.get("commit")
+        if not isinstance(payload, dict):
+            continue
+        committer = payload.get("committer")
+        if isinstance(committer, dict) and committer.get("date"):
+            return str(committer.get("date"))
+    return None
 
 
 def _score_prioritized_repository_candidate(mod: PrioritizedMod, raw: dict[str, object]) -> int:

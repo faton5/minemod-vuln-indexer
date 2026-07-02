@@ -105,6 +105,8 @@ def write_reports(
     components: list[BaseModel],
     findings: list[Finding],
     recent_fix_candidates: list[SecurityEvidenceBundle] | None = None,
+    release_diff_candidates: list[BaseModel] | None = None,
+    release_lag_findings: list[BaseModel] | None = None,
 ) -> None:
     output_directory.mkdir(parents=True, exist_ok=True)
     write_json(output_directory / "mods.json", mods)
@@ -135,3 +137,7 @@ def write_reports(
             render_security_bundles_markdown(recent_fix_candidates),
             encoding="utf-8",
         )
+    if release_diff_candidates is not None:
+        write_json(output_directory / "release_diff_candidates.json", release_diff_candidates)
+    if release_lag_findings is not None:
+        write_json(output_directory / "release_lag_findings.json", release_lag_findings)

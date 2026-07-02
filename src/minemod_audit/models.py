@@ -197,6 +197,58 @@ class SecurityEvidenceBundle(BaseModel):
     requires_manual_review: bool = True
 
 
+class CanonicalMod(BaseModel):
+    canonical_id: str
+    github_repository: str | None = None
+    curseforge_project_ids: list[str] = Field(default_factory=list)
+    modrinth_project_ids: list[str] = Field(default_factory=list)
+    aliases: list[str] = Field(default_factory=list)
+    loaders: list[str] = Field(default_factory=list)
+    minecraft_branches: list[str] = Field(default_factory=list)
+
+
+class ReleaseLagLibrary(BaseModel):
+    canonical_mod_id: str
+    mod_name: str
+    modpack_release_count: int
+    modpack_count: int
+    github_repository: str | None = None
+
+
+class ReleaseDiffCandidate(BaseModel):
+    canonical_mod_id: str
+    old_version: str
+    new_version: str
+    old_tag: str | None = None
+    new_tag: str | None = None
+    changed_files: list[str] = Field(default_factory=list)
+    relevant_patch_sections: list[str] = Field(default_factory=list)
+    category: str
+    explanation: str
+    confidence: int
+    fixed_commit: str | None = None
+    published_at: str | None = None
+    minecraft_branch: str | None = None
+    loader: str | None = None
+
+
+class ReleaseLagFinding(BaseModel):
+    canonical_mod_id: str
+    mod_name: str
+    modpack_name: str
+    modpack_release: str
+    old_version: str
+    new_version: str
+    status: str
+    days_since_fix: int | None = None
+    latest_pack_release: bool = False
+    minecraft_branch: str | None = None
+    loader: str | None = None
+    confidence: int
+    evidence_urls: list[str] = Field(default_factory=list)
+    requires_manual_review: bool = True
+
+
 class Finding(BaseModel):
     mod_name: str
     mod_version: str

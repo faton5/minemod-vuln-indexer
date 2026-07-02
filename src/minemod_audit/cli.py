@@ -244,6 +244,79 @@ def index_modpacks(
     )
 
 
+@app.command("index-curseforge-packs")
+def index_curseforge_packs(
+    limit: Annotated[int, typer.Option("--limit", min=1)] = 200,
+    releases: Annotated[int, typer.Option("--releases", min=1)] = 3,
+    minecraft_version: Annotated[str | None, typer.Option("--minecraft-version")] = None,
+    loader: Annotated[str | None, typer.Option("--loader")] = None,
+    database: DatabaseOption = None,
+    output_directory: OutputOption = None,
+    resume: ResumeOption = False,
+    refresh: RefreshOption = False,
+    offline: OfflineOption = False,
+    verbose: VerboseOption = False,
+) -> None:
+    del resume
+    pipeline = _pipeline(database, output_directory, offline, refresh, verbose)
+    modpacks, indexed_releases, components = pipeline.index_curseforge_modpacks(
+        limit=limit,
+        releases_per_pack=releases,
+        minecraft_version=minecraft_version,
+        loader=loader,
+    )
+    typer.echo(
+        f"Indexed {len(modpacks)} CurseForge packs, "
+        f"{len(indexed_releases)} releases, {len(components)} components"
+    )
+
+
+@app.command("build-canonical-mods")
+def build_canonical_mods(
+    database: DatabaseOption = None,
+    output_directory: OutputOption = None,
+    resume: ResumeOption = False,
+    refresh: RefreshOption = False,
+    offline: OfflineOption = False,
+    verbose: VerboseOption = False,
+) -> None:
+    del resume, refresh
+    pipeline = _pipeline(database, output_directory, offline, False, verbose)
+    canonicals = pipeline.build_canonical_mods()
+    typer.echo(f"Built {len(canonicals)} canonical mods")
+
+
+@app.command("analyze-release-diffs")
+def analyze_release_diffs(
+    top_libraries: Annotated[int, typer.Option("--top-libraries", min=1)] = 50,
+    database: DatabaseOption = None,
+    output_directory: OutputOption = None,
+    resume: ResumeOption = False,
+    refresh: RefreshOption = False,
+    offline: OfflineOption = False,
+    verbose: VerboseOption = False,
+) -> None:
+    del resume
+    pipeline = _pipeline(database, output_directory, offline, refresh, verbose)
+    candidates = pipeline.analyze_release_diffs(top_libraries=top_libraries)
+    typer.echo(f"Analyzed release diffs and produced {len(candidates)} candidates")
+
+
+@app.command("hunt-release-lag")
+def hunt_release_lag(
+    database: DatabaseOption = None,
+    output_directory: OutputOption = None,
+    resume: ResumeOption = False,
+    refresh: RefreshOption = False,
+    offline: OfflineOption = False,
+    verbose: VerboseOption = False,
+) -> None:
+    del resume, refresh
+    pipeline = _pipeline(database, output_directory, offline, False, verbose)
+    findings = pipeline.hunt_release_lag()
+    typer.echo(f"Produced {len(findings)} release lag findings")
+
+
 @app.command("correlate")
 def correlate(
     database: DatabaseOption = None,

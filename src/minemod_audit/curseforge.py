@@ -30,6 +30,8 @@ class CurseForgeClient:
             offline=offline,
             refresh=refresh,
         )
+        self._mod_cache: dict[int, dict[str, Any]] = {}
+        self._file_cache: dict[tuple[int, int], dict[str, Any]] = {}
 
     def close(self) -> None:
         self.http.close()
@@ -96,8 +98,21 @@ class CurseForgeClient:
         return list(payload.get("data", []))
 
     def get_file(self, project_id: int, file_id: int) -> dict[str, Any]:
+        cache_key = (project_id, file_id)
+        if cache_key in self._file_cache:
+            return self._file_cache[cache_key]
         payload = self.http.get_json(f"/v1/mods/{project_id}/files/{file_id}")
-        return dict(payload.get("data", {}))
+        file_payload = dict(payload.get("data", {}))
+        self._file_cache[cache_key] = file_payload
+        return file_payload
+
+    def get_mod(self, project_id: int) -> dict[str, Any]:
+        if project_id in self._mod_cache:
+            return self._mod_cache[project_id]
+        payload = self.http.get_json(f"/v1/mods/{project_id}")
+        mod_payload = dict(payload.get("data", {}))
+        self._mod_cache[project_id] = mod_payload
+        return mod_payload
 
     def get_download_url(self, project_id: int, file_id: int) -> str | None:
         payload = self.http.get_json(f"/v1/mods/{project_id}/files/{file_id}/download-url")
@@ -112,7 +127,7 @@ class CurseForgeClient:
     ) -> tuple[ModpackRelease, list[ModpackComponent]]:
         file_id = int(file_payload["id"])
         release = ModpackRelease(
-            file_id=file_id,
+            file_id=f"curseforge:{file_id}",
             modpack_project_id=modpack.project_id,
             display_name=str(
                 file_payload.get("displayName") or file_payload.get("fileName") or file_id
@@ -153,15 +168,39 @@ class CurseForgeClient:
         parsed = parse_manifest_json(manifest)
         release.minecraft_version = parsed.minecraft_version
         release.loader = parsed.loader
-        components = [
-            ModpackComponent(
-                modpack_file_id=file_id,
-                mod_project_id=component.project_id,
-                mod_file_id=component.file_id,
-                required=component.required,
+        components = []
+        for component in parsed.components:
+            project_id = int(component.project_id)
+            component_file_id = int(component.file_id)
+            mod_payload = self.get_mod(project_id)
+            component_file = self.get_file(project_id, component_file_id)
+            links = mod_payload.get("links") or {}
+            components.append(
+                ModpackComponent(
+                    modpack_file_id=f"curseforge:{file_id}",
+                    mod_project_id=f"curseforge:{project_id}",
+                    mod_file_id=f"curseforge:{component_file_id}",
+                    provider="curseforge",
+                    provider_project_id=str(project_id),
+                    provider_version_id=str(component_file_id),
+                    mod_name=str(mod_payload.get("name") or ""),
+                    mod_version=str(
+                        component_file.get("displayName")
+                        or component_file.get("fileName")
+                        or component_file_id
+                    ),
+                    filename=component_file.get("fileName"),
+                    hashes=_file_hashes(component_file),
+                    loaders=[parsed.loader] if parsed.loader else [],
+                    minecraft_versions=[parsed.minecraft_version]
+                    if parsed.minecraft_version
+                    else [],
+                    source_url=links.get("sourceUrl"),
+                    resolution_status="resolved",
+                    requires_manual_review=False,
+                    required=component.required,
+                )
             )
-            for component in parsed.components
-        ]
         return release, components
 
     @staticmethod
@@ -199,8 +238,29 @@ class CurseForgeClient:
     @staticmethod
     def _modpack_from_api(item: dict[str, Any]) -> Modpack:
         return Modpack(
-            project_id=int(item["id"]),
+            project_id=f"curseforge:{item['id']}",
+            provider="curseforge",
+            provider_project_id=str(item["id"]),
             name=str(item.get("name") or ""),
             slug=str(item.get("slug") or ""),
             download_count=int(item.get("downloadCount") or 0),
         )
+
+
+def _file_hashes(file_payload: dict[str, Any]) -> dict[str, str]:
+    algorithm_names = {
+        1: "sha1",
+        2: "md5",
+    }
+    hashes: dict[str, str] = {}
+    for item in file_payload.get("hashes", []):
+        if not isinstance(item, dict):
+            continue
+        value = item.get("value")
+        if not value:
+            continue
+        raw_algorithm = item.get("algo")
+        algorithm = raw_algorithm if isinstance(raw_algorithm, int) else None
+        key = algorithm_names.get(algorithm, str(algorithm)) if algorithm is not None else "hash"
+        hashes[key] = str(value)
+    return hashes

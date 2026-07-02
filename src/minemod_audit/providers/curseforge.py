@@ -68,7 +68,7 @@ class CurseForgeProvider:
         return [
             ProviderProject(
                 provider="curseforge",
-                provider_project_id=str(item.project_id),
+                provider_project_id=str(item.provider_project_id or item.project_id),
                 slug=item.slug,
                 title=item.name,
                 project_type="modpack",
