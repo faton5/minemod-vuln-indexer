@@ -29,9 +29,34 @@ database = dashboard_database()
 render_sidebar_database_controls(database)
 
 rows = queries.load_records(database, "recent_fix_candidates")
+if not rows:
+    rows = queries.load_records(database, "recent_security_fix_candidates")
+rows = [
+    {
+        **row,
+        "status": row.get("status") or row.get("category") or row.get("ai_verdict") or "unknown",
+    }
+    for row in rows
+]
 show_weak = st.sidebar.checkbox("Show weak signals", value=False)
 allowed_statuses = (
-    {"actionable", "promising", "weak_signal"} if show_weak else {"actionable", "promising"}
+    {
+        "actionable",
+        "promising",
+        "weak_signal",
+        "confirmed_public_fix",
+        "likely_security_fix",
+        "interesting_bugfix",
+        "insufficient_evidence",
+    }
+    if show_weak
+    else {
+        "actionable",
+        "promising",
+        "confirmed_public_fix",
+        "likely_security_fix",
+        "interesting_bugfix",
+    }
 )
 visible = [row for row in rows if row.get("status") in allowed_statuses]
 filters = common_filters(

@@ -56,8 +56,42 @@ def render_details(
                 st.link_button(_label(field), str(value), width="stretch")
 
         if row.get("patch_summary"):
-            st.write("**Patch summary**")
-            st.write(str(row["patch_summary"]))
+            st.write("**Deterministic evidence**")
+            _render_key_values(
+                row,
+                [
+                    "category",
+                    "old_version",
+                    "fixed_version",
+                    "minecraft_version",
+                    "loader",
+                    "public_exploit_information",
+                    "potential_impact",
+                    "prerequisites",
+                    "patch_summary",
+                ],
+            )
+
+        if any(key.startswith("ai_") and row.get(key) not in (None, "", []) for key in row):
+            st.write("**Gemini analysis**")
+            _render_key_values(
+                row,
+                [
+                    "ai_verdict",
+                    "ai_confidence",
+                    "ai_category",
+                    "ai_root_cause",
+                    "ai_previous_behavior",
+                    "ai_added_protection",
+                    "ai_potential_impact",
+                    "ai_public_information_level",
+                    "ai_missing_information",
+                    "ai_contradictions",
+                    "ai_model",
+                    "ai_cache_hit",
+                    "ai_analyzed_at",
+                ],
+            )
 
         _render_expander("Evidence", row.get("evidence") or row.get("source_urls"))
         _render_expander("Changed files", row.get("changed_files"))
@@ -75,6 +109,12 @@ def _render_expander(label: str, value: Any) -> None:
                 st.write(_format_value(item))
         else:
             st.write(_format_value(value))
+
+
+def _render_key_values(row: dict[str, Any], fields: list[str]) -> None:
+    for field in fields:
+        if field in row and row.get(field) not in (None, "", []):
+            st.write(f"**{_label(field)}**: {_format_value(row.get(field))}")
 
 
 def _format_value(value: Any) -> str:

@@ -199,3 +199,30 @@ def test_sensitive_values_are_redacted(tmp_path: Path) -> None:
     rows = queries.load_records(database, "provider_projects")
 
     assert rows[0]["raw_metadata"]["api_key"] == "<redacted>"
+
+
+def test_load_records_refreshes_after_database_changes(tmp_path: Path) -> None:
+    database = tmp_path / "dashboard.sqlite"
+    seed_dashboard_database(database)
+
+    assert len(queries.load_records(database, "mods")) == 1
+
+    store = DataStore(database)
+    store.append_models(
+        "mods",
+        [
+            ModProject(
+                project_id="curseforge:1234",
+                provider="curseforge",
+                provider_project_id="1234",
+                name="Second Mod",
+                slug="second-mod",
+                download_count=10,
+            )
+        ],
+        key=lambda item: str(item.project_id),
+    )
+
+    rows = queries.load_records(database, "mods")
+
+    assert len(rows) == 2

@@ -325,6 +325,15 @@ def hunt_recent_security_fixes(
     popular_mods: Annotated[int, typer.Option("--popular-mods", min=1)] = 100,
     popular_modpacks: Annotated[int, typer.Option("--popular-modpacks", min=1)] = 200,
     top: Annotated[int, typer.Option("--top", min=1)] = 20,
+    ai: Annotated[bool, typer.Option("--ai/--no-ai")] = False,
+    ai_model: Annotated[str | None, typer.Option("--ai-model")] = None,
+    ai_review_model: Annotated[str | None, typer.Option("--ai-review-model")] = None,
+    ai_max_candidates: Annotated[int | None, typer.Option("--ai-max-candidates", min=1)] = None,
+    ai_max_review_calls: Annotated[
+        int | None,
+        typer.Option("--ai-max-review-calls", min=0),
+    ] = None,
+    ai_refresh: Annotated[bool, typer.Option("--ai-refresh")] = False,
     database: DatabaseOption = None,
     output_directory: OutputOption = None,
     resume: ResumeOption = False,
@@ -348,15 +357,56 @@ def hunt_recent_security_fixes(
             typer.echo(f"CurseForge: error - {reason}", err=True)
             raise typer.Exit(1)
         typer.echo("CurseForge: enabled")
+    if ai_refresh:
+        typer.echo("Gemini: warning - AI cache will be ignored for this run", err=True)
     candidates = pipeline.hunt_recent_security_fixes(
         provider=provider,
         updated_within_days=updated_within_days,
         popular_mods=popular_mods,
         popular_modpacks=popular_modpacks,
         top=top,
+        ai=ai,
+        ai_model=ai_model,
+        ai_review_model=ai_review_model,
+        ai_max_candidates=ai_max_candidates,
+        ai_max_review_calls=ai_max_review_calls,
+        ai_refresh=ai_refresh,
     )
     pipeline.report()
     typer.echo(f"Produced {len(candidates)} recent security fix candidates")
+
+
+@app.command("analyze-candidates-with-gemini")
+def analyze_candidates_with_gemini(
+    max_candidates: Annotated[int, typer.Option("--max-candidates", min=1)] = 20,
+    max_review_calls: Annotated[int, typer.Option("--max-review-calls", min=0)] = 3,
+    ai_model: Annotated[str | None, typer.Option("--ai-model")] = None,
+    ai_review_model: Annotated[str | None, typer.Option("--ai-review-model")] = None,
+    ai_refresh: Annotated[bool, typer.Option("--ai-refresh")] = False,
+    database: DatabaseOption = None,
+    output_directory: OutputOption = None,
+    resume: ResumeOption = False,
+    refresh: RefreshOption = False,
+    offline: OfflineOption = False,
+    verbose: VerboseOption = False,
+) -> None:
+    del resume
+    if ai_refresh:
+        typer.echo("Gemini: warning - AI cache will be ignored for this run", err=True)
+    pipeline = _pipeline(database, output_directory, offline, refresh, verbose)
+    candidates = pipeline.analyze_candidates_with_gemini(
+        max_candidates=max_candidates,
+        max_review_calls=max_review_calls,
+        ai_model=ai_model,
+        ai_review_model=ai_review_model,
+        ai_refresh=ai_refresh,
+    )
+    analyzed = sum(1 for candidate in candidates if candidate.ai_verdict)
+    cache_hits = sum(1 for candidate in candidates if candidate.ai_cache_hit)
+    typer.echo(
+        "Gemini analysis complete: "
+        f"{analyzed}/{len(candidates)} candidates annotated, {cache_hits} cache hits"
+    )
 
 
 @app.command("inspect-fix")

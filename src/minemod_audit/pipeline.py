@@ -6,6 +6,8 @@ from pathlib import Path
 import httpx
 
 from minemod_audit.advisories import GitHubClient, deduplicate_models, normalize_advisory
+from minemod_audit.ai.cache import GeminiAnalysisCache
+from minemod_audit.ai.gemini_client import GeminiRunConfig, GeminiSecurityAnalyzer
 from minemod_audit.config import Settings
 from minemod_audit.curseforge import CurseForgeClient
 from minemod_audit.database import DataStore
@@ -605,6 +607,12 @@ class Pipeline:
         popular_mods: int = 100,
         popular_modpacks: int = 200,
         top: int = 20,
+        ai: bool = False,
+        ai_model: str | None = None,
+        ai_review_model: str | None = None,
+        ai_max_candidates: int | None = None,
+        ai_max_review_calls: int | None = None,
+        ai_refresh: bool = False,
     ) -> list[RecentSecurityFixCandidate]:
         provider_names = _requested_workflow_providers(provider)
         if "curseforge" in provider_names:
@@ -674,12 +682,74 @@ class Pipeline:
             reverse=True,
         )
         selected = enriched_candidates[:top]
+        if ai:
+            selected = self._analyze_recent_candidates_with_gemini(
+                selected,
+                ai_model=ai_model,
+                ai_review_model=ai_review_model,
+                ai_max_candidates=ai_max_candidates,
+                ai_max_review_calls=ai_max_review_calls,
+                ai_refresh=ai_refresh,
+            )
         self.store.replace_models(
             "recent_security_fix_candidates",
             selected,
             key=lambda item: item.candidate_id,
         )
         return selected
+
+    def analyze_candidates_with_gemini(
+        self,
+        *,
+        max_candidates: int | None = None,
+        max_review_calls: int | None = None,
+        ai_model: str | None = None,
+        ai_review_model: str | None = None,
+        ai_refresh: bool = False,
+    ) -> list[RecentSecurityFixCandidate]:
+        candidates = self.store.load_models(
+            "recent_security_fix_candidates",
+            RecentSecurityFixCandidate,
+        )
+        analyzed = self._analyze_recent_candidates_with_gemini(
+            candidates,
+            ai_model=ai_model,
+            ai_review_model=ai_review_model,
+            ai_max_candidates=max_candidates,
+            ai_max_review_calls=max_review_calls,
+            ai_refresh=ai_refresh,
+        )
+        self.store.replace_models(
+            "recent_security_fix_candidates",
+            analyzed,
+            key=lambda item: item.candidate_id,
+        )
+        return analyzed
+
+    def _analyze_recent_candidates_with_gemini(
+        self,
+        candidates: list[RecentSecurityFixCandidate],
+        *,
+        ai_model: str | None,
+        ai_review_model: str | None,
+        ai_max_candidates: int | None,
+        ai_max_review_calls: int | None,
+        ai_refresh: bool,
+    ) -> list[RecentSecurityFixCandidate]:
+        analyzer = GeminiSecurityAnalyzer(
+            settings=self.settings,
+            cache=GeminiAnalysisCache(self.store),
+        )
+        return analyzer.analyze_candidates(
+            candidates,
+            config=GeminiRunConfig(
+                model=ai_model,
+                review_model=ai_review_model,
+                max_candidates=ai_max_candidates,
+                max_review_calls=ai_max_review_calls,
+                refresh_cache=ai_refresh,
+            ),
+        )
 
     def inspect_fix(self, *, candidate_id: str) -> RecentSecurityFixCandidate | None:
         for candidate in self.store.load_models(

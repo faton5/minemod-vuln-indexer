@@ -65,17 +65,20 @@ VULNERABILITIES = TableSchema(
 
 RECENT_FIX_CANDIDATES = TableSchema(
     column_order=[
-        "status",
+        "category",
         "confidence",
+        "ai_verdict",
+        "ai_confidence",
         "mod_name",
+        "provider",
+        "old_version",
+        "fixed_version",
+        "minecraft_version",
+        "loader",
         "repository",
-        "impact_category",
         "pull_request_url",
         "commit_url",
-        "release_url",
-        "release_version",
-        "fixed_versions",
-        "updated_at",
+        "release_date",
     ],
     column_config={
         "confidence": st.column_config.ProgressColumn(
@@ -83,9 +86,14 @@ RECENT_FIX_CANDIDATES = TableSchema(
             min_value=0,
             max_value=100,
         ),
+        "ai_confidence": st.column_config.ProgressColumn(
+            "AI Confidence",
+            min_value=0,
+            max_value=100,
+        ),
+        "repository": link_column("Repository"),
         "pull_request_url": link_column("PR"),
         "commit_url": link_column("Commit"),
-        "release_url": link_column("Release"),
     },
 )
 

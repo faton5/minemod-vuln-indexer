@@ -33,6 +33,28 @@ class Settings(BaseSettings):
     modrinth_requests_per_minute: int = Field(default=120, alias="MODRINTH_REQUESTS_PER_MINUTE")
     provider_priority: str = Field(default="modrinth,curseforge", alias="PROVIDER_PRIORITY")
     security_lookback_days: int = Field(default=180, alias="SECURITY_LOOKBACK_DAYS")
+    gemini_api_key: str | None = Field(default=None, alias="GEMINI_API_KEY")
+    gemini_ai_enabled: bool = Field(default=False, alias="GEMINI_AI_ENABLED")
+    gemini_triage_model: str = Field(
+        default="gemini-3.1-flash-lite",
+        alias="GEMINI_TRIAGE_MODEL",
+    )
+    gemini_review_model: str = Field(default="gemini-3.5-flash", alias="GEMINI_REVIEW_MODEL")
+    gemini_max_candidates_per_run: int = Field(
+        default=20,
+        alias="GEMINI_MAX_CANDIDATES_PER_RUN",
+    )
+    gemini_max_review_calls_per_run: int = Field(
+        default=3,
+        alias="GEMINI_MAX_REVIEW_CALLS_PER_RUN",
+    )
+    gemini_max_input_chars: int = Field(default=30000, alias="GEMINI_MAX_INPUT_CHARS")
+    gemini_max_output_tokens: int = Field(default=1200, alias="GEMINI_MAX_OUTPUT_TOKENS")
+    gemini_cache_enabled: bool = Field(default=True, alias="GEMINI_CACHE_ENABLED")
+    gemini_prompt_version: str = Field(
+        default="security-triage-v1",
+        alias="GEMINI_PROMPT_VERSION",
+    )
 
     database: Path = Path("data/minemod.sqlite")
     output_directory: Path = Path("output")

@@ -28,8 +28,17 @@ def create_read_engine(database_path: Path) -> Engine | None:
     return create_engine(f"sqlite:///file:{sqlite_path}?mode=ro&uri=true", future=True)
 
 
-@st.cache_data(show_spinner=False)
 def load_records(database_path: Path, kind: str) -> list[RecordPayload]:
+    return _load_records(database_path, kind, database_revision(database_path))
+
+
+@st.cache_data(show_spinner=False)
+def _load_records(
+    database_path: Path,
+    kind: str,
+    revision: tuple[int, int],
+) -> list[RecordPayload]:
+    del revision
     engine = create_read_engine(database_path)
     if engine is None:
         return []
@@ -37,6 +46,14 @@ def load_records(database_path: Path, kind: str) -> list[RecordPayload]:
     with engine.connect() as connection:
         rows = connection.execute(statement).all()
     return [sanitize_payload(dict(row.payload)) for row in rows]
+
+
+def database_revision(database_path: Path) -> tuple[int, int]:
+    try:
+        stat = database_path.stat()
+    except FileNotFoundError:
+        return (0, 0)
+    return (stat.st_mtime_ns, stat.st_size)
 
 
 def sanitize_payload(payload: Any) -> Any:
@@ -53,8 +70,13 @@ def sanitize_payload(payload: Any) -> Any:
     return payload
 
 
-@st.cache_data(show_spinner=False)
 def overview_stats(database_path: Path) -> OverviewStats:
+    return _overview_stats(database_path, database_revision(database_path))
+
+
+@st.cache_data(show_spinner=False)
+def _overview_stats(database_path: Path, revision: tuple[int, int]) -> OverviewStats:
+    del revision
     vulnerabilities = load_records(database_path, "vulnerabilities")
     findings = load_records(database_path, "findings")
     manual_review = [item for item in findings if item.get("requires_manual_review")]

@@ -286,6 +286,24 @@ class RecentSecurityFixCandidate(BaseModel):
     category: str
     affected_modpacks: list[AffectedModpack] = Field(default_factory=list)
     requires_manual_review: bool = True
+    ai_provider: str | None = None
+    ai_model: str | None = None
+    ai_review_model: str | None = None
+    ai_verdict: str | None = None
+    ai_confidence: int | None = None
+    ai_category: str | None = None
+    ai_root_cause: str | None = None
+    ai_previous_behavior: str | None = None
+    ai_added_protection: str | None = None
+    ai_potential_impact: str | None = None
+    ai_public_information_level: str | None = None
+    ai_requires_manual_review: bool = False
+    ai_concise_explanation: str | None = None
+    ai_evidence_hash: str | None = None
+    ai_analyzed_at: str | None = None
+    ai_cache_hit: bool = False
+    ai_missing_information: list[str] = Field(default_factory=list)
+    ai_contradictions: list[str] = Field(default_factory=list)
 
 
 class Finding(BaseModel):
