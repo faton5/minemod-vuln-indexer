@@ -1,11 +1,8 @@
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Protocol
-
-from pydantic import ValidationError
 
 from minemod_audit.ai.cache import GeminiAnalysisCache
 from minemod_audit.ai.evidence import (
@@ -200,7 +197,7 @@ class GeminiSecurityAnalyzer:
                 user_payload=payload,
                 max_output_tokens=self.settings.gemini_max_output_tokens,
             )
-        except (ValidationError, json.JSONDecodeError) as exc:
+        except Exception as exc:  # noqa: BLE001
             return GeminiAnalysisResult(
                 candidate_id=candidate.candidate_id,
                 evidence_hash=current_hash,

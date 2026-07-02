@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, Field, field_validator
 
 SCHEMA_VERSION = "gemini-security-analysis-v1"
 
@@ -39,8 +39,6 @@ PublicInformationLevel = Literal[
 
 
 class GeminiSecurityAnalysis(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
     verdict: GeminiVerdict
     confidence: int
     category: GeminiCategory
