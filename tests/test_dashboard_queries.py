@@ -6,6 +6,7 @@ from minemod_audit.ai.schemas import GeminiSecurityAnalysis
 from minemod_audit.database import DataStore
 from minemod_audit.models import (
     AffectedModpack,
+    CrawlerEvent,
     Finding,
     Modpack,
     ModpackComponent,
@@ -306,3 +307,109 @@ def test_security_candidate_rows_exposure_status(tmp_path: Path) -> None:
     assert rows[0]["affected_modpacks_count"] == 1
     assert rows[0]["latest_affected_modpacks"] == 1
     assert rows[0]["exposure_status"] == "latest_pack_still_affected"
+    assert rows[0]["attention_level"] == "high"
+    assert rows[0]["dashboard_actionable"] is True
+    assert rows[0]["modpack_status"] == "1 latest release(s) still affected"
+    assert rows[0]["fix_status"] == "Fix identified: 1.0.0 -> 1.0.1"
+
+
+def test_crawler_events_can_be_filtered_by_candidate(tmp_path: Path) -> None:
+    database = tmp_path / "dashboard.sqlite"
+    store = DataStore(database)
+    store.append_models(
+        "crawler_events",
+        [
+            CrawlerEvent(
+                event_id="event-1",
+                run_id="run-1",
+                stage="recent_security_fixes.candidate",
+                message="Example Mod selected.",
+                created_at="2026-07-02T10:00:00+00:00",
+                candidate_id="candidate-1",
+                mod_name="Example Mod",
+                data={"ai_verdict": "interesting_security_fix"},
+            ),
+            CrawlerEvent(
+                event_id="event-2",
+                run_id="run-1",
+                stage="recent_security_fixes.candidate",
+                message="Other Mod selected.",
+                created_at="2026-07-02T11:00:00+00:00",
+                candidate_id="candidate-2",
+                mod_name="Other Mod",
+            ),
+        ],
+        key=lambda item: item.event_id,
+    )
+
+    events = queries.crawler_events(database, candidate_id="candidate-1")
+
+    assert len(events) == 1
+    assert events[0]["mod_name"] == "Example Mod"
+    assert events[0]["data"]["ai_verdict"] == "interesting_security_fix"
+
+
+def test_ai_normal_bugfix_deprioritizes_manual_review_noise(tmp_path: Path) -> None:
+    database = tmp_path / "dashboard.sqlite"
+    store = DataStore(database)
+    store.replace_models(
+        "recent_security_fix_candidates",
+        [
+            RecentSecurityFixCandidate(
+                candidate_id="candidate-normal",
+                mod_name="Noise Mod",
+                provider="curseforge",
+                provider_project_id="4567",
+                old_version="1.0.0",
+                fixed_version="1.0.1",
+                changelog_excerpt="Improve updater networking.",
+                patch_summary="No linked diff available",
+                potential_impact="Standard bug fix.",
+                confidence=70,
+                category="interesting_bugfix",
+                ai_verdict="normal_bugfix",
+                ai_confidence=85,
+                ai_status="valid",
+                ai_concise_explanation="No security-relevant behavior was identified.",
+            )
+        ],
+        key=lambda item: item.candidate_id,
+    )
+
+    rows = queries.security_candidate_rows(database)
+
+    assert rows[0]["attention_level"] == "low"
+    assert rows[0]["dashboard_actionable"] is False
+    assert rows[0]["review_action"] == "Do not spend time unless new evidence appears."
+
+
+def test_ai_insufficient_evidence_without_exposure_is_low_priority(tmp_path: Path) -> None:
+    database = tmp_path / "dashboard.sqlite"
+    store = DataStore(database)
+    store.replace_models(
+        "recent_security_fix_candidates",
+        [
+            RecentSecurityFixCandidate(
+                candidate_id="candidate-insufficient",
+                mod_name="Unclear Mod",
+                provider="curseforge",
+                provider_project_id="8910",
+                old_version="1.0.0",
+                fixed_version="1.0.1",
+                changelog_excerpt="Fix dupe-like behavior.",
+                patch_summary="No linked diff available",
+                potential_impact="Maybe duplication, not enough evidence.",
+                confidence=65,
+                category="interesting_bugfix",
+                ai_verdict="insufficient_evidence",
+                ai_confidence=40,
+                ai_status="valid",
+            )
+        ],
+        key=lambda item: item.candidate_id,
+    )
+
+    rows = queries.security_candidate_rows(database)
+
+    assert rows[0]["attention_level"] == "low"
+    assert rows[0]["dashboard_actionable"] is False

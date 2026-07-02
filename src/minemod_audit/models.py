@@ -302,8 +302,22 @@ class RecentSecurityFixCandidate(BaseModel):
     ai_evidence_hash: str | None = None
     ai_analyzed_at: str | None = None
     ai_cache_hit: bool = False
+    ai_status: str | None = None
+    ai_error: str | None = None
     ai_missing_information: list[str] = Field(default_factory=list)
     ai_contradictions: list[str] = Field(default_factory=list)
+
+
+class CrawlerEvent(BaseModel):
+    event_id: str
+    run_id: str
+    stage: str
+    level: str = "info"
+    message: str
+    created_at: str
+    candidate_id: str | None = None
+    mod_name: str | None = None
+    data: dict[str, Any] = Field(default_factory=dict)
 
 
 class Finding(BaseModel):

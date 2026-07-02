@@ -29,7 +29,11 @@ render_sidebar_database_controls(database)
 
 usage = queries.ai_usage_stats(database)
 cache_rows = queries.load_records(database, "gemini_analysis_cache")
-candidate_rows = [row for row in queries.security_candidate_rows(database) if row.get("ai_verdict")]
+candidate_rows = [
+    row
+    for row in queries.security_candidate_rows(database)
+    if row.get("ai_verdict") or row.get("ai_status")
+]
 
 cols = st.columns(4)
 cols[0].metric("Analyses cachees", usage["cached_analyses"])
@@ -49,9 +53,13 @@ if candidate_rows:
         key="ai_candidates_table",
         column_order=[
             "mod_name",
+            "ai_label",
             "ai_verdict",
+            "ai_status",
+            "ai_error",
             "ai_confidence",
             "ai_category",
+            "ai_concise_explanation",
             "ai_public_information_level",
             "exposure_status",
             "affected_modpacks_count",

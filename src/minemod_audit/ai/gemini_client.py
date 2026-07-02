@@ -131,7 +131,9 @@ class GeminiSecurityAnalyzer:
                 continue
             result = self.analyze_candidate(candidate, bundle, config=run_config)
             if result.analysis is None:
-                analyzed.append(candidate)
+                analyzed.append(
+                    _apply_analysis_status(candidate, result, self._model(run_config), run_config)
+                )
                 continue
             used += 1
             updated = _apply_analysis(candidate, result, self._model(run_config), run_config)
@@ -336,8 +338,30 @@ def _apply_analysis(
             "ai_evidence_hash": result.evidence_hash,
             "ai_analyzed_at": result.analyzed_at,
             "ai_cache_hit": result.cache_hit,
+            "ai_status": result.status,
+            "ai_error": None,
             "ai_missing_information": analysis.missing_information,
             "ai_contradictions": analysis.contradictions,
+        }
+    )
+
+
+def _apply_analysis_status(
+    candidate: RecentSecurityFixCandidate,
+    result: GeminiAnalysisResult,
+    model: str,
+    config: GeminiRunConfig,
+) -> RecentSecurityFixCandidate:
+    return candidate.model_copy(
+        update={
+            "ai_provider": "gemini",
+            "ai_model": model,
+            "ai_review_model": config.review_model,
+            "ai_evidence_hash": result.evidence_hash,
+            "ai_analyzed_at": result.analyzed_at,
+            "ai_cache_hit": result.cache_hit,
+            "ai_status": result.status,
+            "ai_error": result.error,
         }
     )
 

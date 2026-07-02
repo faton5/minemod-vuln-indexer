@@ -1,6 +1,7 @@
+import hashlib
 from collections import Counter
 from collections.abc import Iterable
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 
 import httpx
@@ -14,6 +15,7 @@ from minemod_audit.database import DataStore
 from minemod_audit.io import load_yaml_mapping
 from minemod_audit.models import (
     CanonicalMod,
+    CrawlerEvent,
     Finding,
     Modpack,
     ModpackComponent,
@@ -614,6 +616,7 @@ class Pipeline:
         ai_max_review_calls: int | None = None,
         ai_refresh: bool = False,
     ) -> list[RecentSecurityFixCandidate]:
+        run_id = _crawler_run_id("recent-security-fixes")
         provider_names = _requested_workflow_providers(provider)
         if "curseforge" in provider_names:
             self.index_curseforge_modpacks(
@@ -691,6 +694,18 @@ class Pipeline:
                 ai_max_review_calls=ai_max_review_calls,
                 ai_refresh=ai_refresh,
             )
+        self.store.append_models(
+            "crawler_events",
+            _recent_security_fix_events(
+                run_id=run_id,
+                provider_names=sorted(provider_names),
+                releases_count=len(releases),
+                candidates_count=len(candidates),
+                selected=selected,
+                ai_enabled=ai,
+            ),
+            key=lambda item: item.event_id,
+        )
         self.store.replace_models(
             "recent_security_fix_candidates",
             selected,
@@ -2049,3 +2064,103 @@ def _parse_datetime(value: str) -> datetime | None:
     from minemod_audit.security_discovery import parse_github_datetime
 
     return parse_github_datetime(value)
+
+
+def _crawler_run_id(stage: str) -> str:
+    return f"{stage}:{datetime.now(UTC).strftime('%Y%m%dT%H%M%SZ')}"
+
+
+def _recent_security_fix_events(
+    *,
+    run_id: str,
+    provider_names: list[str],
+    releases_count: int,
+    candidates_count: int,
+    selected: list[RecentSecurityFixCandidate],
+    ai_enabled: bool,
+) -> list[CrawlerEvent]:
+    created_at = datetime.now(UTC).isoformat()
+    events = [
+        CrawlerEvent(
+            event_id=_crawler_event_id(run_id, "summary", "run"),
+            run_id=run_id,
+            stage="recent_security_fixes.summary",
+            message="Recent security fix hunt completed candidate selection.",
+            created_at=created_at,
+            data={
+                "providers": provider_names,
+                "releases_seen": releases_count,
+                "interesting_candidates_before_top": candidates_count,
+                "selected_candidates": len(selected),
+                "ai_enabled": ai_enabled,
+                "ai_with_verdict": sum(1 for candidate in selected if candidate.ai_verdict),
+                "latest_pack_still_affected": sum(
+                    1
+                    for candidate in selected
+                    if any(item.latest_pack_release for item in candidate.affected_modpacks)
+                ),
+            },
+        )
+    ]
+    for candidate in selected:
+        latest_affected = sum(1 for item in candidate.affected_modpacks if item.latest_pack_release)
+        events.append(
+            CrawlerEvent(
+                event_id=_crawler_event_id(run_id, "candidate", candidate.candidate_id),
+                run_id=run_id,
+                stage="recent_security_fixes.candidate",
+                message=_candidate_event_message(candidate, latest_affected),
+                created_at=created_at,
+                candidate_id=candidate.candidate_id,
+                mod_name=candidate.mod_name,
+                data={
+                    "provider": candidate.provider,
+                    "provider_project_id": candidate.provider_project_id,
+                    "old_version": candidate.old_version,
+                    "fixed_version": candidate.fixed_version,
+                    "minecraft_version": candidate.minecraft_version,
+                    "loader": candidate.loader,
+                    "release_date": candidate.release_date,
+                    "category": candidate.category,
+                    "confidence": candidate.confidence,
+                    "requires_manual_review": candidate.requires_manual_review,
+                    "affected_modpacks_count": len(candidate.affected_modpacks),
+                    "latest_affected_modpacks": latest_affected,
+                    "ai_status": candidate.ai_status,
+                    "ai_error": candidate.ai_error,
+                    "ai_verdict": candidate.ai_verdict,
+                    "ai_confidence": candidate.ai_confidence,
+                    "ai_category": candidate.ai_category,
+                    "ai_requires_manual_review": candidate.ai_requires_manual_review,
+                    "public_exploit_information": candidate.public_exploit_information,
+                    "evidence_links": {
+                        "repository": candidate.repository,
+                        "issue_url": candidate.issue_url,
+                        "pull_request_url": candidate.pull_request_url,
+                        "commit_url": candidate.commit_url,
+                    },
+                    "changed_files_count": len(candidate.changed_files),
+                },
+            )
+        )
+    return events
+
+
+def _candidate_event_message(candidate: RecentSecurityFixCandidate, latest_affected: int) -> str:
+    ai_label = candidate.ai_verdict or candidate.ai_status or "not_analyzed"
+    exposure = (
+        "latest modpack release affected"
+        if latest_affected
+        else "historical modpack release only"
+        if candidate.affected_modpacks
+        else "no exact modpack exposure"
+    )
+    return (
+        f"{candidate.mod_name}: {candidate.old_version} -> {candidate.fixed_version}; "
+        f"{candidate.category}; AI={ai_label}; {exposure}."
+    )
+
+
+def _crawler_event_id(run_id: str, stage: str, key: str) -> str:
+    digest = hashlib.sha256(f"{run_id}:{stage}:{key}".encode()).hexdigest()[:16]
+    return f"{run_id}:{stage}:{digest}"

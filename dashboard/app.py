@@ -83,22 +83,27 @@ def _render_attention(candidates: list[dict[str, object]]) -> None:
         )
         return
 
-    visible = candidates[:50]
+    visible = [row for row in candidates if row.get("dashboard_actionable")][:50]
+    if not visible:
+        st.info(
+            "Aucun candidat actionnable pour l'instant. "
+            "Va dans Vulnerabilities et decoche le filtre utile pour inspecter le bruit."
+        )
+        return
     selected_index = st.dataframe(
         visible,
         width="stretch",
         hide_index=True,
         column_order=[
+            "attention_level",
             "priority",
             "mod_name",
-            "ai_verdict",
+            "risk_summary",
+            "ai_label",
             "ai_confidence",
-            "category",
-            "confidence",
+            "modpack_status",
             "old_version",
             "fixed_version",
-            "affected_modpacks_count",
-            "exposure_status",
             "release_date",
         ],
         selection_mode="single-row",

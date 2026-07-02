@@ -167,6 +167,18 @@ AI_VERDICT_RANK = {
     "unrelated": 0,
 }
 
+ACTIONABLE_AI_VERDICTS = {
+    "confirmed_public_vulnerability",
+    "probable_exploitable_bug",
+    "interesting_security_fix",
+}
+
+ACTIONABLE_CATEGORIES = {
+    "confirmed_public_fix",
+    "likely_security_fix",
+    "interesting_bugfix",
+}
+
 
 def security_candidate_rows(database_path: Path) -> list[RecordPayload]:
     rows = load_records(database_path, "recent_security_fix_candidates")
@@ -186,6 +198,14 @@ def security_candidate_rows(database_path: Path) -> list[RecordPayload]:
         copy["latest_affected_modpacks"] = latest_affected
         copy["exposure_status"] = _exposure_status(copy, latest_affected, len(affected_list))
         copy["priority"] = security_candidate_priority(copy)
+        copy["attention_level"] = _attention_level(copy)
+        copy["attention_reason"] = _attention_reason(copy)
+        copy["ai_label"] = _ai_label(copy)
+        copy["fix_status"] = _fix_status(copy)
+        copy["modpack_status"] = _modpack_status(copy)
+        copy["risk_summary"] = _risk_summary(copy)
+        copy["review_action"] = _review_action(copy)
+        copy["dashboard_actionable"] = _dashboard_actionable(copy)
         copy["evidence_links_count"] = sum(
             1
             for field in ("repository", "issue_url", "pull_request_url", "commit_url")
@@ -204,6 +224,13 @@ def security_candidate_rows(database_path: Path) -> list[RecordPayload]:
     )
 
 
+def crawler_events(database_path: Path, *, candidate_id: str | None = None) -> list[RecordPayload]:
+    rows = load_records(database_path, "crawler_events")
+    if candidate_id:
+        rows = [row for row in rows if row.get("candidate_id") == candidate_id]
+    return sorted(rows, key=lambda item: str(item.get("created_at") or ""), reverse=True)
+
+
 def security_candidate_priority(row: RecordPayload) -> int:
     ai_rank = AI_VERDICT_RANK.get(str(row.get("ai_verdict") or ""), 0) * 100
     affected = int(row.get("affected_modpacks_count") or 0)
@@ -211,6 +238,125 @@ def security_candidate_priority(row: RecordPayload) -> int:
     base = int(row.get("confidence") or 0)
     ai_confidence = int(row.get("ai_confidence") or 0)
     return ai_rank + ai_confidence + base + affected * 10 + latest_affected * 25
+
+
+def _attention_level(row: RecordPayload) -> str:
+    ai_verdict = str(row.get("ai_verdict") or "")
+    category = str(row.get("category") or "")
+    latest_affected = int(row.get("latest_affected_modpacks") or 0)
+    affected = int(row.get("affected_modpacks_count") or 0)
+    confidence = int(row.get("confidence") or 0)
+    ai_confidence = int(row.get("ai_confidence") or 0)
+    if ai_verdict in {"confirmed_public_vulnerability", "probable_exploitable_bug"}:
+        return "urgent"
+    if ai_verdict in {"normal_bugfix", "unrelated"} and latest_affected == 0:
+        return "low"
+    if ai_verdict == "insufficient_evidence" and latest_affected == 0:
+        return "manual" if affected else "low"
+    if latest_affected > 0 and (ai_verdict in ACTIONABLE_AI_VERDICTS or confidence >= 60):
+        return "high"
+    if ai_verdict == "interesting_security_fix" or category in ACTIONABLE_CATEGORIES:
+        return "review"
+    if affected > 0 and (confidence >= 60 or ai_confidence >= 60):
+        return "review"
+    return "manual"
+
+
+def _dashboard_actionable(row: RecordPayload) -> bool:
+    ai_verdict = str(row.get("ai_verdict") or "")
+    attention = str(row.get("attention_level") or "")
+    affected = int(row.get("affected_modpacks_count") or 0)
+    latest_affected = int(row.get("latest_affected_modpacks") or 0)
+    if attention in {"urgent", "high"}:
+        return True
+    if ai_verdict in ACTIONABLE_AI_VERDICTS:
+        return True
+    return affected > 0 and (attention == "review" or latest_affected > 0)
+
+
+def _attention_reason(row: RecordPayload) -> str:
+    level = str(row.get("attention_level") or "")
+    latest_affected = int(row.get("latest_affected_modpacks") or 0)
+    affected = int(row.get("affected_modpacks_count") or 0)
+    ai_verdict = str(row.get("ai_verdict") or "")
+    if latest_affected:
+        return f"{latest_affected} latest modpack release(s) still match the old version."
+    if affected:
+        return f"{affected} historical modpack release(s) use the old version."
+    if ai_verdict in {"normal_bugfix", "unrelated"}:
+        return "AI did not find enough security evidence."
+    if level == "manual":
+        return "Needs a human check because evidence is incomplete."
+    return "Candidate has public fix evidence worth checking."
+
+
+def _ai_label(row: RecordPayload) -> str:
+    verdict = str(row.get("ai_verdict") or "")
+    status = str(row.get("ai_status") or "")
+    labels = {
+        "confirmed_public_vulnerability": "AI: confirmed public vulnerability",
+        "probable_exploitable_bug": "AI: probable exploitable bug",
+        "interesting_security_fix": "AI: interesting security fix",
+        "normal_bugfix": "AI: normal bug fix",
+        "insufficient_evidence": "AI: insufficient evidence",
+        "unrelated": "AI: unrelated",
+        "valid": "AI: valid",
+        "invalid": "AI: rejected response",
+        "skipped": "AI: skipped",
+    }
+    if verdict:
+        return labels.get(verdict, f"AI: {verdict}")
+    if status:
+        return labels.get(status, f"AI: {status}")
+    return "AI: not analyzed"
+
+
+def _fix_status(row: RecordPayload) -> str:
+    old_version = str(row.get("old_version") or "?")
+    fixed_version = str(row.get("fixed_version") or "")
+    if fixed_version:
+        return f"Fix identified: {old_version} -> {fixed_version}"
+    return f"Old version known: {old_version}; fixed version missing"
+
+
+def _modpack_status(row: RecordPayload) -> str:
+    affected = int(row.get("affected_modpacks_count") or 0)
+    latest_affected = int(row.get("latest_affected_modpacks") or 0)
+    if affected == 0:
+        return "No exact modpack match yet"
+    if latest_affected > 0:
+        return f"{latest_affected} latest release(s) still affected"
+    return f"{affected} old release(s) affected, latest releases look patched or unknown"
+
+
+def _risk_summary(row: RecordPayload) -> str:
+    ai_summary = str(row.get("ai_concise_explanation") or "").strip()
+    if ai_summary:
+        return ai_summary
+    impact = str(row.get("ai_potential_impact") or row.get("potential_impact") or "").strip()
+    if impact:
+        return impact
+    patch_summary = str(row.get("patch_summary") or "").strip()
+    if patch_summary:
+        return patch_summary
+    return "No concise explanation available yet."
+
+
+def _review_action(row: RecordPayload) -> str:
+    verdict = str(row.get("ai_verdict") or "")
+    latest_affected = int(row.get("latest_affected_modpacks") or 0)
+    affected = int(row.get("affected_modpacks_count") or 0)
+    if verdict in {"confirmed_public_vulnerability", "probable_exploitable_bug"}:
+        return "Check evidence and impacted latest modpacks first."
+    if latest_affected > 0:
+        return "Verify whether the pack maintainer has released a patched version."
+    if verdict == "interesting_security_fix":
+        return "Read the linked PR/commit before deciding if it is exploitable."
+    if affected > 0:
+        return "Historical exposure only; lower priority unless the pack release is still used."
+    if verdict in {"normal_bugfix", "unrelated"}:
+        return "Do not spend time unless new evidence appears."
+    return "Manual review only if the mod is important to your target scope."
 
 
 def _exposure_status(row: RecordPayload, latest_affected: int, affected_count: int) -> str:
