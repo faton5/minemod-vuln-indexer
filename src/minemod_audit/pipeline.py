@@ -1,4 +1,5 @@
 from collections import Counter
+from collections.abc import Iterable
 from datetime import datetime
 from pathlib import Path
 
@@ -17,6 +18,7 @@ from minemod_audit.models import (
     ModpackRelease,
     ModProject,
     PrioritizedMod,
+    RecentSecurityFixCandidate,
     ReleaseDiffCandidate,
     ReleaseLagFinding,
     ReleaseLagLibrary,
@@ -34,6 +36,14 @@ from minemod_audit.providers.base import (
 )
 from minemod_audit.providers.dedupe import deduplicate_provider_projects
 from minemod_audit.providers.registry import ProviderRegistry
+from minemod_audit.recent_security_fixes import (
+    RecentFixRelease,
+    classify_recent_fix,
+    correlate_affected_modpacks,
+    is_interesting_changelog,
+    linked_reference_numbers,
+    linked_sha,
+)
 from minemod_audit.release_lag import (
     build_canonical_mods,
     classify_release_diff,
@@ -95,6 +105,17 @@ class Pipeline:
             offline=self.offline,
             refresh=self.refresh,
         ).status()
+
+    def verify_curseforge_connection(self) -> ProviderStatus:
+        provider = ProviderRegistry(
+            self.settings,
+            offline=self.offline,
+            refresh=self.refresh,
+        ).build_provider("curseforge")
+        try:
+            return provider.health_check()
+        finally:
+            provider.close()
 
     def collect_mods(self, *, limit: int, provider: str = "modrinth") -> list[ModProject]:
         provider_projects = self._collect_provider_projects(
@@ -576,6 +597,231 @@ class Pipeline:
         )
         return findings
 
+    def hunt_recent_security_fixes(
+        self,
+        *,
+        provider: str = "all",
+        updated_within_days: int = 14,
+        popular_mods: int = 100,
+        popular_modpacks: int = 200,
+        top: int = 20,
+    ) -> list[RecentSecurityFixCandidate]:
+        provider_names = _requested_workflow_providers(provider)
+        if "curseforge" in provider_names:
+            self.index_curseforge_modpacks(
+                limit=popular_modpacks,
+                releases_per_pack=3,
+            )
+        if "modrinth" in provider_names:
+            self.collect_modpacks(limit=min(popular_modpacks, 100), provider="modrinth")
+
+        releases: list[RecentFixRelease] = []
+        if "curseforge" in provider_names:
+            releases.extend(
+                self._curseforge_recent_fix_releases(
+                    updated_within_days=updated_within_days,
+                    popular_mods=popular_mods,
+                )
+            )
+        if "modrinth" in provider_names:
+            releases.extend(
+                self._modrinth_recent_fix_releases(
+                    updated_within_days=updated_within_days,
+                    popular_mods=popular_mods,
+                )
+            )
+
+        components = self.store.load_models("modpack_components", ModpackComponent)
+        modpacks = self.store.load_models("modpacks", Modpack)
+        modpack_releases = self.store.load_models("modpack_releases", ModpackRelease)
+        presence_counts = Counter(str(component.mod_project_id) for component in components)
+        candidates = [
+            classify_recent_fix(
+                release,
+                modpack_presence_count=presence_counts.get(release.mod_project_id, 0),
+            )
+            for release in releases
+            if is_interesting_changelog(release.changelog) or release.patches
+        ]
+        enriched_candidates: list[RecentSecurityFixCandidate] = []
+        for candidate in candidates:
+            affected = correlate_affected_modpacks(
+                candidate=candidate,
+                components=components,
+                modpacks=modpacks,
+                releases=modpack_releases,
+            )
+            latest_affected = any(item.latest_pack_release for item in affected)
+            if latest_affected:
+                rescored_release = _release_from_candidate(candidate)
+                candidate = classify_recent_fix(
+                    rescored_release,
+                    modpack_presence_count=presence_counts.get(
+                        f"{candidate.provider}:{candidate.provider_project_id}",
+                        0,
+                    ),
+                    latest_modpack_still_affected=True,
+                ).model_copy(update={"affected_modpacks": affected})
+            else:
+                candidate.affected_modpacks = affected
+            enriched_candidates.append(candidate)
+        enriched_candidates.sort(
+            key=lambda item: (
+                item.confidence,
+                len(item.affected_modpacks),
+                item.release_date or "",
+            ),
+            reverse=True,
+        )
+        selected = enriched_candidates[:top]
+        self.store.replace_models(
+            "recent_security_fix_candidates",
+            selected,
+            key=lambda item: item.candidate_id,
+        )
+        return selected
+
+    def inspect_fix(self, *, candidate_id: str) -> RecentSecurityFixCandidate | None:
+        for candidate in self.store.load_models(
+            "recent_security_fix_candidates",
+            RecentSecurityFixCandidate,
+        ):
+            if candidate.candidate_id == candidate_id:
+                return candidate
+        return None
+
+    def _curseforge_recent_fix_releases(
+        self,
+        *,
+        updated_within_days: int,
+        popular_mods: int,
+    ) -> list[RecentFixRelease]:
+        if not self.settings.curseforge_api_key:
+            return []
+        client = CurseForgeClient(
+            api_key=self.settings.curseforge_api_key,
+            cache_directory=self.settings.cache_directory,
+            timeout_seconds=self.settings.timeout_seconds,
+            offline=self.offline,
+            refresh=self.refresh,
+        )
+        github = GitHubClient(
+            token=self.settings.github_token,
+            cache_directory=self.settings.cache_directory,
+            timeout_seconds=self.settings.timeout_seconds,
+            offline=self.offline,
+            refresh=self.refresh,
+        )
+        releases: list[RecentFixRelease] = []
+        since_dt = since_for_lookback(updated_within_days)
+        try:
+            mods = client.collect_recent_popular_mods(limit=popular_mods)
+            for mod in mods:
+                project_id = int(mod.project_id)
+                files = client.get_files(project_id, page_size=20)
+                recent_files = [
+                    file_payload
+                    for file_payload in files
+                    if _is_on_or_after(str(file_payload.get("fileDate") or ""), since_dt)
+                ]
+                for new_file in recent_files:
+                    previous = _previous_compatible_curseforge_file(new_file, files)
+                    if previous is None:
+                        continue
+                    changelog = client.get_file_changelog(project_id, int(new_file["id"]))
+                    if not is_interesting_changelog(changelog):
+                        continue
+                    repository = extract_github_repository(mod.source_url)
+                    evidence = _github_evidence_from_text(
+                        github,
+                        repository=repository,
+                        text=changelog,
+                    )
+                    releases.append(
+                        RecentFixRelease(
+                            mod_project_id=f"curseforge:{project_id}",
+                            mod_name=mod.name,
+                            provider="curseforge",
+                            provider_project_id=str(project_id),
+                            old_file_id=f"curseforge:{previous['id']}",
+                            new_file_id=f"curseforge:{new_file['id']}",
+                            old_version=_curseforge_file_version(previous),
+                            fixed_version=_curseforge_file_version(new_file),
+                            minecraft_version=_minecraft_version_from_game_versions(
+                                _as_string_list(new_file.get("gameVersions"))
+                            ),
+                            loader=_loader_from_game_versions(
+                                _as_string_list(new_file.get("gameVersions"))
+                            ),
+                            release_date=str(new_file.get("fileDate") or ""),
+                            changelog=changelog,
+                            repository=repository,
+                            issue_url=_optional_string(evidence.get("issue_url")),
+                            pull_request_url=_optional_string(evidence.get("pull_request_url")),
+                            commit_url=_optional_string(evidence.get("commit_url")),
+                            changed_files=_as_string_list(evidence.get("changed_files")),
+                            patches=_as_string_list(evidence.get("patches")),
+                            maintainer_confirmed=bool(evidence.get("maintainer_confirmed")),
+                        )
+                    )
+        finally:
+            client.close()
+            github.close()
+        return releases
+
+    def _modrinth_recent_fix_releases(
+        self,
+        *,
+        updated_within_days: int,
+        popular_mods: int,
+    ) -> list[RecentFixRelease]:
+        provider_client = ProviderRegistry(
+            self.settings,
+            offline=self.offline,
+            refresh=self.refresh,
+        ).build_provider("modrinth")
+        releases: list[RecentFixRelease] = []
+        since_dt = since_for_lookback(updated_within_days)
+        try:
+            mods = provider_client.list_popular_mods(limit=popular_mods, offset=0)
+            for mod in mods:
+                versions = provider_client.get_project_versions(
+                    mod.provider_project_id,
+                    include_changelog=True,
+                )
+                recent_versions = [
+                    version
+                    for version in versions
+                    if _is_on_or_after(version.publication_date, since_dt)
+                ]
+                for version in recent_versions:
+                    previous = _previous_compatible_provider_version(version, versions)
+                    changelog = str(version.raw_metadata.get("changelog") or "")
+                    if previous is None or not is_interesting_changelog(changelog):
+                        continue
+                    releases.append(
+                        RecentFixRelease(
+                            mod_project_id=f"modrinth:{mod.provider_project_id}",
+                            mod_name=mod.title,
+                            provider="modrinth",
+                            provider_project_id=mod.provider_project_id,
+                            old_file_id=f"modrinth:{previous.provider_version_id}",
+                            new_file_id=f"modrinth:{version.provider_version_id}",
+                            old_version=previous.version_number,
+                            fixed_version=version.version_number,
+                            minecraft_version=version.game_versions[0]
+                            if version.game_versions
+                            else None,
+                            loader=version.loaders[0] if version.loaders else None,
+                            release_date=version.publication_date,
+                            changelog=changelog,
+                            repository=extract_github_repository(mod.source_url),
+                        )
+                    )
+        finally:
+            provider_client.close()
+        return releases
+
     def index_modpacks(
         self,
         *,
@@ -947,6 +1193,10 @@ class Pipeline:
                 "release_lag_findings",
                 ReleaseLagFinding,
             ),
+            recent_security_fix_candidates=self.store.load_models(
+                "recent_security_fix_candidates",
+                RecentSecurityFixCandidate,
+            ),
         )
 
 
@@ -962,6 +1212,169 @@ def _score_repository_candidate(mod: ModProject, raw: dict[str, object]) -> int:
     if str(raw.get("archived")).lower() == "false":
         score += 5
     return score
+
+
+def _requested_workflow_providers(selector: str) -> set[str]:
+    normalized = selector.strip().lower()
+    if normalized == "all":
+        return {"modrinth", "curseforge"}
+    return {item.strip() for item in normalized.split(",") if item.strip()}
+
+
+def _is_on_or_after(value: str | None, threshold: datetime) -> bool:
+    parsed = _parse_datetime(value or "")
+    return parsed is not None and parsed >= threshold
+
+
+def _is_before(value: str | None, threshold: datetime) -> bool:
+    parsed = _parse_datetime(value or "")
+    return parsed is not None and parsed < threshold
+
+
+def _optional_string(value: object) -> str | None:
+    return str(value) if value else None
+
+
+def _previous_compatible_curseforge_file(
+    current: dict[str, object],
+    files: list[dict[str, object]],
+) -> dict[str, object] | None:
+    current_date = _parse_datetime(str(current.get("fileDate") or ""))
+    current_versions = set(_as_string_list(current.get("gameVersions")))
+    if current_date is None:
+        return None
+    compatible = [
+        file_payload
+        for file_payload in files
+        if file_payload.get("id") != current.get("id")
+        and _is_before(str(file_payload.get("fileDate") or ""), current_date)
+        and _same_curseforge_context(
+            current_versions, set(_as_string_list(file_payload.get("gameVersions")))
+        )
+    ]
+    compatible.sort(
+        key=lambda item: _parse_datetime(str(item.get("fileDate") or "")) or datetime.min,
+        reverse=True,
+    )
+    return compatible[0] if compatible else None
+
+
+def _same_curseforge_context(current_versions: set[str], candidate_versions: set[str]) -> bool:
+    return _minecraft_version_from_game_versions(
+        current_versions
+    ) == _minecraft_version_from_game_versions(candidate_versions) and _loader_from_game_versions(
+        current_versions
+    ) == _loader_from_game_versions(candidate_versions)
+
+
+def _curseforge_file_version(file_payload: dict[str, object]) -> str:
+    return str(
+        file_payload.get("displayName") or file_payload.get("fileName") or file_payload.get("id")
+    )
+
+
+def _minecraft_version_from_game_versions(values: Iterable[str]) -> str | None:
+    for value in values:
+        if value and value[0].isdigit():
+            return value
+    return None
+
+
+def _loader_from_game_versions(values: Iterable[str]) -> str | None:
+    normalized_values = {value.lower() for value in values}
+    for loader in ("neoforge", "forge", "fabric", "quilt"):
+        if loader in normalized_values:
+            return loader
+    return None
+
+
+def _previous_compatible_provider_version(
+    current: ProviderVersion,
+    versions: list[ProviderVersion],
+) -> ProviderVersion | None:
+    current_date = _parse_datetime(current.publication_date or "")
+    if current_date is None:
+        return None
+    compatible = [
+        version
+        for version in versions
+        if version.provider_version_id != current.provider_version_id
+        and _is_before(version.publication_date, current_date)
+        and set(version.game_versions) == set(current.game_versions)
+        and set(version.loaders) == set(current.loaders)
+    ]
+    compatible.sort(
+        key=lambda item: _parse_datetime(item.publication_date or "") or datetime.min,
+        reverse=True,
+    )
+    return compatible[0] if compatible else None
+
+
+def _github_evidence_from_text(
+    github: GitHubClient,
+    *,
+    repository: str | None,
+    text: str,
+) -> dict[str, object]:
+    if not repository:
+        return {}
+    evidence: dict[str, object] = {}
+    for number in linked_reference_numbers(text):
+        try:
+            pull = github.get_pull_request(repository, number)
+            evidence["pull_request_url"] = str(pull.get("html_url") or "")
+            evidence["maintainer_confirmed"] = _author_is_maintainer(pull)
+            commits = github.list_pull_request_commits(repository, number)
+            if commits:
+                sha = str(commits[-1].get("sha") or "")
+                details = github.get_commit_details(repository, sha)
+                changed_files, patches = _changed_files_and_patches(details)
+                evidence["commit_url"] = str(details.get("html_url") or "")
+                evidence["changed_files"] = changed_files
+                evidence["patches"] = patches
+            return evidence
+        except httpx.HTTPStatusError:
+            try:
+                issue = github.get_issue(repository, number)
+                evidence["issue_url"] = str(issue.get("html_url") or "")
+                evidence["maintainer_confirmed"] = _author_is_maintainer(issue)
+                return evidence
+            except httpx.HTTPStatusError:
+                continue
+    linked_commit_sha = linked_sha(text)
+    if linked_commit_sha:
+        try:
+            details = github.get_commit_details(repository, linked_commit_sha)
+            changed_files, patches = _changed_files_and_patches(details)
+            evidence["commit_url"] = str(details.get("html_url") or "")
+            evidence["changed_files"] = changed_files
+            evidence["patches"] = patches
+        except httpx.HTTPStatusError:
+            return evidence
+    return evidence
+
+
+def _release_from_candidate(candidate: RecentSecurityFixCandidate) -> RecentFixRelease:
+    return RecentFixRelease(
+        mod_project_id=f"{candidate.provider}:{candidate.provider_project_id}",
+        mod_name=candidate.mod_name,
+        provider=candidate.provider,
+        provider_project_id=candidate.provider_project_id,
+        old_file_id=candidate.old_file_id,
+        new_file_id=candidate.new_file_id,
+        old_version=candidate.old_version,
+        fixed_version=candidate.fixed_version,
+        minecraft_version=candidate.minecraft_version,
+        loader=candidate.loader,
+        release_date=candidate.release_date,
+        changelog=candidate.changelog_excerpt,
+        repository=candidate.repository,
+        issue_url=candidate.issue_url,
+        pull_request_url=candidate.pull_request_url,
+        commit_url=candidate.commit_url,
+        changed_files=candidate.changed_files,
+        patches=[],
+    )
 
 
 def _components_by_canonical(

@@ -249,6 +249,45 @@ class ReleaseLagFinding(BaseModel):
     requires_manual_review: bool = True
 
 
+class AffectedModpack(BaseModel):
+    modpack: str
+    modpack_release: str
+    installed_version: str
+    fixed_version: str
+    same_minecraft_loader: bool
+    latest_pack_release: bool
+    days_since_fix: int | None = None
+    download_count: int = 0
+
+
+class RecentSecurityFixCandidate(BaseModel):
+    candidate_id: str
+    mod_name: str
+    repository: str | None = None
+    provider: str
+    provider_project_id: str
+    old_file_id: str | None = None
+    new_file_id: str | None = None
+    old_version: str
+    fixed_version: str
+    minecraft_version: str | None = None
+    loader: str | None = None
+    release_date: str | None = None
+    changelog_excerpt: str
+    issue_url: str | None = None
+    pull_request_url: str | None = None
+    commit_url: str | None = None
+    changed_files: list[str] = Field(default_factory=list)
+    patch_summary: str
+    potential_impact: str
+    prerequisites: str | None = None
+    public_exploit_information: str = "none"
+    confidence: int
+    category: str
+    affected_modpacks: list[AffectedModpack] = Field(default_factory=list)
+    requires_manual_review: bool = True
+
+
 class Finding(BaseModel):
     mod_name: str
     mod_version: str

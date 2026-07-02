@@ -193,6 +193,11 @@ class GitHubClient:
         payload = self.http.get_json(f"/repos/{owner}/{repo}/pulls/{pull_number}")
         return dict(payload)
 
+    def get_issue(self, repository: str, issue_number: int) -> dict[str, Any]:
+        owner, repo = repository.split("/", maxsplit=1)
+        payload = self.http.get_json(f"/repos/{owner}/{repo}/issues/{issue_number}")
+        return dict(payload)
+
     def list_pull_request_commits(self, repository: str, pull_number: int) -> list[dict[str, Any]]:
         owner, repo = repository.split("/", maxsplit=1)
         payload = self.http.get_json(f"/repos/{owner}/{repo}/pulls/{pull_number}/commits")

@@ -9,6 +9,7 @@ from minemod_audit.models import Modpack, ModpackComponent, ModpackRelease, ModP
 
 MINECRAFT_GAME_ID = 432
 SORT_TOTAL_DOWNLOADS = 6
+SORT_LAST_UPDATED = 3
 SORT_DESCENDING = "desc"
 
 
@@ -70,12 +71,36 @@ class CurseForgeClient:
         for category in payload.get("data", []):
             slug = str(category.get("slug") or "").lower()
             if slug == wanted_slug:
-                return int(category["classId"])
+                raw_class_id = category.get("classId") or category.get("id")
+                if raw_class_id is None:
+                    break
+                return int(raw_class_id)
         raise LookupError(f"CurseForge class not found for slug {wanted_slug!r}")
 
     def collect_mods(self, *, limit: int) -> list[ModProject]:
         class_id = self.resolve_class_id("mc-mods")
         return [self._mod_from_api(item) for item in self._search(class_id=class_id, limit=limit)]
+
+    def collect_recent_popular_mods(self, *, limit: int) -> list[ModProject]:
+        class_id = self.resolve_class_id("mc-mods")
+        recent = self._search(
+            class_id=class_id,
+            limit=limit,
+            extra={"sortField": SORT_LAST_UPDATED},
+        )
+        popular_ids = {item.project_id for item in self.collect_mods(limit=limit * 2)}
+        prioritized = [
+            self._mod_from_api(item) for item in recent if int(item["id"]) in popular_ids
+        ]
+        fallback = [self._mod_from_api(item) for item in recent]
+        seen: set[int | str] = set()
+        merged = []
+        for item in [*prioritized, *fallback]:
+            if item.project_id in seen:
+                continue
+            seen.add(item.project_id)
+            merged.append(item)
+        return merged[:limit]
 
     def collect_modpacks(
         self,
@@ -106,6 +131,11 @@ class CurseForgeClient:
         self._file_cache[cache_key] = file_payload
         return file_payload
 
+    def get_file_changelog(self, project_id: int, file_id: int) -> str:
+        payload = self.http.get_json(f"/v1/mods/{project_id}/files/{file_id}/changelog")
+        data = payload.get("data")
+        return str(data or "")
+
     def get_mod(self, project_id: int) -> dict[str, Any]:
         if project_id in self._mod_cache:
             return self._mod_cache[project_id]
@@ -135,7 +165,8 @@ class CurseForgeClient:
             release_date=file_payload.get("fileDate"),
             download_url=None,
         )
-        download_url = self.get_download_url(int(modpack.project_id), file_id)
+        curseforge_project_id = int(modpack.provider_project_id or modpack.project_id)
+        download_url = self.get_download_url(curseforge_project_id, file_id)
         if not download_url:
             release.unresolved_reason = "download URL unavailable"
             return release, []

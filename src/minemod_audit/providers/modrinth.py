@@ -106,10 +106,15 @@ class ModrinthProvider:
                 projects[project.provider_project_id] = project
         return projects
 
-    def get_project_versions(self, project_id_or_slug: str) -> list[ProviderVersion]:
+    def get_project_versions(
+        self,
+        project_id_or_slug: str,
+        *,
+        include_changelog: bool = False,
+    ) -> list[ProviderVersion]:
         payload = self._get(
             f"/project/{project_id_or_slug}/version",
-            params={"include_changelog": "false"},
+            params={"include_changelog": "true" if include_changelog else "false"},
         )
         return [self._version_from_payload(item) for item in payload]
 

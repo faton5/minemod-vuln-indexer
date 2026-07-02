@@ -82,7 +82,12 @@ class ProjectProvider(Protocol):
 
     def get_projects(self, project_ids: list[str]) -> dict[str, ProviderProject]: ...
 
-    def get_project_versions(self, project_id_or_slug: str) -> list[ProviderVersion]: ...
+    def get_project_versions(
+        self,
+        project_id_or_slug: str,
+        *,
+        include_changelog: bool = False,
+    ) -> list[ProviderVersion]: ...
 
     def get_version(self, version_id: str) -> ProviderVersion: ...
 

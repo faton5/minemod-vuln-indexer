@@ -63,6 +63,8 @@ minemod-audit index-curseforge-packs --limit 200 --releases 3
 minemod-audit build-canonical-mods
 minemod-audit analyze-release-diffs --top-libraries 50
 minemod-audit hunt-release-lag
+minemod-audit hunt-recent-security-fixes --provider all --updated-within-days 14 --popular-mods 100 --popular-modpacks 200 --top 20
+minemod-audit inspect-fix --candidate-id <id>
 minemod-audit dashboard
 ```
 
@@ -124,6 +126,36 @@ message text. It keeps changed files and relevant patch sections, and prioritize
 server-trust boundaries such as packets, NBT, inventories, permissions, session
 state and server-side reconstruction. Findings are stored in
 `release_lag_findings` and exported to `output/release_lag_findings.json`.
+
+## Recent security fix hunting
+
+This workflow looks for recent public changelog fixes in popular mods, then
+checks whether indexed modpacks still use the previous release.
+
+```bash
+minemod-audit hunt-recent-security-fixes \
+  --provider all \
+  --updated-within-days 14 \
+  --popular-mods 100 \
+  --popular-modpacks 200 \
+  --top 20
+```
+
+The command reads `CURSEFORGE_API_KEY` only from the local `.env` file and tests
+the CurseForge connection before crawling. On success it prints only
+`CurseForge: enabled` for that check.
+
+It searches changelogs for public fix wording around duplication, packet
+validation, NBT, permission bypasses, ownership, distance and server-side trust
+boundaries. Linked public PRs, issues or commits are used as evidence when
+referenced. Results are exported to
+`output/recent_security_fix_candidates.json`.
+
+Inspect one candidate:
+
+```bash
+minemod-audit inspect-fix --candidate-id <id>
+```
 
 ## Local dashboard
 

@@ -85,7 +85,13 @@ class CurseForgeProvider:
     def get_projects(self, project_ids: list[str]) -> dict[str, ProviderProject]:
         return {project_id: self.get_project(project_id) for project_id in project_ids}
 
-    def get_project_versions(self, project_id_or_slug: str) -> list[ProviderVersion]:
+    def get_project_versions(
+        self,
+        project_id_or_slug: str,
+        *,
+        include_changelog: bool = False,
+    ) -> list[ProviderVersion]:
+        del include_changelog
         files = self.client.get_files(int(project_id_or_slug), page_size=50)
         return [self._version_from_file(file_payload) for file_payload in files]
 

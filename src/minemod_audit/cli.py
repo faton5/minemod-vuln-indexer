@@ -1,3 +1,4 @@
+import json
 import os
 import subprocess
 import sys
@@ -315,6 +316,66 @@ def hunt_release_lag(
     pipeline = _pipeline(database, output_directory, offline, False, verbose)
     findings = pipeline.hunt_release_lag()
     typer.echo(f"Produced {len(findings)} release lag findings")
+
+
+@app.command("hunt-recent-security-fixes")
+def hunt_recent_security_fixes(
+    provider: Annotated[str, typer.Option("--provider")] = "all",
+    updated_within_days: Annotated[int, typer.Option("--updated-within-days", min=1)] = 14,
+    popular_mods: Annotated[int, typer.Option("--popular-mods", min=1)] = 100,
+    popular_modpacks: Annotated[int, typer.Option("--popular-modpacks", min=1)] = 200,
+    top: Annotated[int, typer.Option("--top", min=1)] = 20,
+    database: DatabaseOption = None,
+    output_directory: OutputOption = None,
+    resume: ResumeOption = False,
+    refresh: RefreshOption = False,
+    offline: OfflineOption = False,
+    verbose: VerboseOption = False,
+) -> None:
+    del resume
+    pipeline = _pipeline(database, output_directory, offline, refresh, verbose)
+    requested = {item.strip().lower() for item in provider.split(",") if item.strip()}
+    if provider.strip().lower() == "all":
+        requested = {"modrinth", "curseforge"}
+    if "curseforge" in requested:
+        try:
+            curseforge = pipeline.verify_curseforge_connection()
+        except Exception as exc:  # noqa: BLE001
+            typer.echo(f"CurseForge: error - {exc.__class__.__name__}", err=True)
+            raise typer.Exit(1) from exc
+        if curseforge.status != "enabled":
+            reason = curseforge.reason
+            typer.echo(f"CurseForge: error - {reason}", err=True)
+            raise typer.Exit(1)
+        typer.echo("CurseForge: enabled")
+    candidates = pipeline.hunt_recent_security_fixes(
+        provider=provider,
+        updated_within_days=updated_within_days,
+        popular_mods=popular_mods,
+        popular_modpacks=popular_modpacks,
+        top=top,
+    )
+    pipeline.report()
+    typer.echo(f"Produced {len(candidates)} recent security fix candidates")
+
+
+@app.command("inspect-fix")
+def inspect_fix(
+    candidate_id: Annotated[str, typer.Option("--candidate-id")],
+    database: DatabaseOption = None,
+    output_directory: OutputOption = None,
+    resume: ResumeOption = False,
+    refresh: RefreshOption = False,
+    offline: OfflineOption = False,
+    verbose: VerboseOption = False,
+) -> None:
+    del resume, refresh
+    pipeline = _pipeline(database, output_directory, offline, False, verbose)
+    candidate = pipeline.inspect_fix(candidate_id=candidate_id)
+    if candidate is None:
+        typer.echo(f"Candidate not found: {candidate_id}", err=True)
+        raise typer.Exit(1)
+    typer.echo(json.dumps(candidate.model_dump(mode="json"), indent=2, ensure_ascii=False))
 
 
 @app.command("correlate")
