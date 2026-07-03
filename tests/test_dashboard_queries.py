@@ -287,6 +287,15 @@ def test_security_candidate_rows_exposure_status(tmp_path: Path) -> None:
                 potential_impact="Possible packet validation issue.",
                 confidence=70,
                 category="likely_security_fix",
+                mod_downloads=2_500_000,
+                modpack_presence_count=8,
+                popularity_rank=4,
+                popularity_score=48,
+                selection_reason=(
+                    "security score 70; popularity score 48; "
+                    "2,500,000 downloads; 8 indexed modpack releases; "
+                    "provider popularity rank #4"
+                ),
                 affected_modpacks=[
                     AffectedModpack(
                         modpack="Example Pack",
@@ -309,6 +318,8 @@ def test_security_candidate_rows_exposure_status(tmp_path: Path) -> None:
     assert rows[0]["exposure_status"] == "latest_pack_still_affected"
     assert rows[0]["attention_level"] == "high"
     assert rows[0]["dashboard_actionable"] is True
+    assert "2,500,000 mod downloads" in rows[0]["popularity_summary"]
+    assert "8 indexed modpack release(s)" in rows[0]["popularity_summary"]
     assert rows[0]["modpack_status"] == "1 latest release(s) still affected"
     assert rows[0]["fix_status"] == "Fix identified: 1.0.0 -> 1.0.1"
 

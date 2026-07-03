@@ -6,6 +6,7 @@ from minemod_audit.recent_security_fixes import (
     classify_recent_fix,
     correlate_affected_modpacks,
     public_exploit_information_level,
+    rank_recent_security_candidates,
 )
 
 
@@ -41,6 +42,63 @@ def test_ftb_library_changelog_fix_is_detected_without_exploit_word() -> None:
     assert candidate.public_exploit_information == "technical_description"
     assert "EditNBTResponsePacket" in candidate.patch_summary
     assert "server-side" in candidate.potential_impact
+
+
+def test_classify_recent_fix_preserves_mod_popularity_context() -> None:
+    release = RecentFixRelease(
+        mod_project_id="curseforge:999",
+        mod_name="Popular Library",
+        old_file_id="curseforge:100",
+        new_file_id="curseforge:101",
+        old_version="1.0.0",
+        fixed_version="1.0.1",
+        release_date="2026-06-20T00:00:00Z",
+        changelog="Fix dupe by validating server-side packet state.",
+        mod_downloads=12_000_000,
+        popularity_rank=2,
+    )
+
+    candidate = classify_recent_fix(release, modpack_presence_count=42)
+
+    assert candidate.mod_downloads == 12_000_000
+    assert candidate.modpack_presence_count == 42
+    assert candidate.popularity_rank == 2
+    assert candidate.popularity_score >= 40
+    assert "12,000,000 downloads" in candidate.selection_reason
+    assert "42 indexed modpack releases" in candidate.selection_reason
+
+
+def test_rank_recent_security_candidates_prefers_popular_mods_when_evidence_is_comparable() -> None:
+    small = classify_recent_fix(
+        RecentFixRelease(
+            mod_project_id="curseforge:small",
+            mod_name="Small Mod",
+            old_version="1.0.0",
+            fixed_version="1.0.1",
+            release_date="2026-06-20T00:00:00Z",
+            changelog="Fix dupe by validating packet input.",
+            mod_downloads=5_000,
+            popularity_rank=100,
+        ),
+        modpack_presence_count=0,
+    )
+    large = classify_recent_fix(
+        RecentFixRelease(
+            mod_project_id="curseforge:large",
+            mod_name="Large Mod",
+            old_version="1.0.0",
+            fixed_version="1.0.1",
+            release_date="2026-06-19T00:00:00Z",
+            changelog="Fix dupe by validating packet input.",
+            mod_downloads=20_000_000,
+            popularity_rank=1,
+        ),
+        modpack_presence_count=25,
+    )
+
+    ranked = rank_recent_security_candidates([small, large])
+
+    assert ranked[0].mod_name == "Large Mod"
 
 
 def test_public_exploit_information_levels_do_not_store_payloads() -> None:

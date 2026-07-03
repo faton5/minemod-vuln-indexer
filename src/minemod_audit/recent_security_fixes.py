@@ -82,6 +82,8 @@ class RecentFixRelease:
     changed_files: list[str] = field(default_factory=list)
     patches: list[str] = field(default_factory=list)
     maintainer_confirmed: bool = False
+    mod_downloads: int = 0
+    popularity_rank: int | None = None
 
 
 def classify_recent_fix(
@@ -120,6 +122,11 @@ def classify_recent_fix(
 
     score = max(0, min(100, score))
     category = _category(score, normalized)
+    popularity_score = _popularity_score(
+        downloads=release.mod_downloads,
+        modpack_presence_count=modpack_presence_count,
+        popularity_rank=release.popularity_rank,
+    )
     candidate = RecentSecurityFixCandidate(
         candidate_id=_candidate_id(release),
         mod_name=release.mod_name,
@@ -145,9 +152,25 @@ def classify_recent_fix(
         public_exploit_information=public_exploit_information_level(text),
         confidence=score,
         category=category,
+        mod_downloads=release.mod_downloads,
+        modpack_presence_count=modpack_presence_count,
+        popularity_rank=release.popularity_rank,
+        popularity_score=popularity_score,
+        selection_reason=_selection_reason(
+            release=release,
+            modpack_presence_count=modpack_presence_count,
+            popularity_score=popularity_score,
+            security_score=score,
+        ),
         requires_manual_review=category not in {"confirmed_public_fix", "likely_security_fix"},
     )
     return candidate
+
+
+def rank_recent_security_candidates(
+    candidates: list[RecentSecurityFixCandidate],
+) -> list[RecentSecurityFixCandidate]:
+    return sorted(candidates, key=_candidate_rank_key, reverse=True)
 
 
 def correlate_affected_modpacks(
@@ -269,6 +292,69 @@ def _category(score: int, normalized: str) -> str:
     if score >= 35:
         return "interesting_bugfix"
     return "insufficient_evidence"
+
+
+def _popularity_score(
+    *,
+    downloads: int,
+    modpack_presence_count: int,
+    popularity_rank: int | None,
+) -> int:
+    if downloads >= 10_000_000:
+        download_score = 35
+    elif downloads >= 1_000_000:
+        download_score = 25
+    elif downloads >= 100_000:
+        download_score = 15
+    elif downloads >= 10_000:
+        download_score = 8
+    else:
+        download_score = 0
+
+    presence_score = min(30, modpack_presence_count)
+    if popularity_rank is None:
+        rank_score = 0
+    elif popularity_rank <= 10:
+        rank_score = 15
+    elif popularity_rank <= 50:
+        rank_score = 10
+    elif popularity_rank <= 100:
+        rank_score = 5
+    else:
+        rank_score = 0
+    return min(100, download_score + presence_score + rank_score)
+
+
+def _selection_reason(
+    *,
+    release: RecentFixRelease,
+    modpack_presence_count: int,
+    popularity_score: int,
+    security_score: int,
+) -> str:
+    parts = [
+        f"security score {security_score}",
+        f"popularity score {popularity_score}",
+        f"{release.mod_downloads:,} downloads",
+        f"{modpack_presence_count} indexed modpack releases",
+    ]
+    if release.popularity_rank is not None:
+        parts.append(f"provider popularity rank #{release.popularity_rank}")
+    return "; ".join(parts)
+
+
+def _candidate_rank_key(candidate: RecentSecurityFixCandidate) -> tuple[object, ...]:
+    latest_affected = sum(1 for item in candidate.affected_modpacks if item.latest_pack_release)
+    return (
+        candidate.confidence >= 35,
+        candidate.confidence,
+        latest_affected,
+        len(candidate.affected_modpacks),
+        candidate.popularity_score,
+        candidate.modpack_presence_count,
+        candidate.mod_downloads,
+        candidate.release_date or "",
+    )
 
 
 def _candidate_id(release: RecentFixRelease) -> str:

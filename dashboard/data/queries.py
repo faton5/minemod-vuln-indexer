@@ -206,6 +206,7 @@ def security_candidate_rows(database_path: Path) -> list[RecordPayload]:
         copy["risk_summary"] = _risk_summary(copy)
         copy["review_action"] = _review_action(copy)
         copy["dashboard_actionable"] = _dashboard_actionable(copy)
+        copy["popularity_summary"] = _popularity_summary(copy)
         copy["evidence_links_count"] = sum(
             1
             for field in ("repository", "issue_url", "pull_request_url", "commit_url")
@@ -237,7 +238,8 @@ def security_candidate_priority(row: RecordPayload) -> int:
     latest_affected = int(row.get("latest_affected_modpacks") or 0)
     base = int(row.get("confidence") or 0)
     ai_confidence = int(row.get("ai_confidence") or 0)
-    return ai_rank + ai_confidence + base + affected * 10 + latest_affected * 25
+    popularity_score = int(row.get("popularity_score") or 0)
+    return ai_rank + ai_confidence + base + affected * 10 + latest_affected * 25 + popularity_score
 
 
 def _attention_level(row: RecordPayload) -> str:
@@ -340,6 +342,18 @@ def _risk_summary(row: RecordPayload) -> str:
     if patch_summary:
         return patch_summary
     return "No concise explanation available yet."
+
+
+def _popularity_summary(row: RecordPayload) -> str:
+    downloads = int(row.get("mod_downloads") or 0)
+    presence = int(row.get("modpack_presence_count") or 0)
+    rank = row.get("popularity_rank")
+    rank_part = f", rank #{rank}" if rank else ""
+    return (
+        f"{downloads:,} mod downloads{rank_part}; "
+        f"{presence} indexed modpack release(s); "
+        f"popularity score {int(row.get('popularity_score') or 0)}"
+    )
 
 
 def _review_action(row: RecordPayload) -> str:

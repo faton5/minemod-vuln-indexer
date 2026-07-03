@@ -47,6 +47,7 @@ from minemod_audit.recent_security_fixes import (
     is_interesting_changelog,
     linked_reference_numbers,
     linked_sha,
+    rank_recent_security_candidates,
 )
 from minemod_audit.release_lag import (
     build_canonical_mods,
@@ -676,15 +677,7 @@ class Pipeline:
             else:
                 candidate.affected_modpacks = affected
             enriched_candidates.append(candidate)
-        enriched_candidates.sort(
-            key=lambda item: (
-                item.confidence,
-                len(item.affected_modpacks),
-                item.release_date or "",
-            ),
-            reverse=True,
-        )
-        selected = enriched_candidates[:top]
+        selected = rank_recent_security_candidates(enriched_candidates)[:top]
         if ai:
             selected = self._analyze_recent_candidates_with_gemini(
                 selected,
@@ -801,7 +794,7 @@ class Pipeline:
         since_dt = since_for_lookback(updated_within_days)
         try:
             mods = client.collect_recent_popular_mods(limit=popular_mods)
-            for mod in mods:
+            for index, mod in enumerate(mods, start=1):
                 project_id = int(mod.project_id)
                 files = client.get_files(project_id, page_size=20)
                 recent_files = [
@@ -847,6 +840,8 @@ class Pipeline:
                             changed_files=_as_string_list(evidence.get("changed_files")),
                             patches=_as_string_list(evidence.get("patches")),
                             maintainer_confirmed=bool(evidence.get("maintainer_confirmed")),
+                            mod_downloads=mod.download_count,
+                            popularity_rank=index,
                         )
                     )
         finally:
@@ -869,7 +864,7 @@ class Pipeline:
         since_dt = since_for_lookback(updated_within_days)
         try:
             mods = provider_client.list_popular_mods(limit=popular_mods, offset=0)
-            for mod in mods:
+            for index, mod in enumerate(mods, start=1):
                 versions = provider_client.get_project_versions(
                     mod.provider_project_id,
                     include_changelog=True,
@@ -901,6 +896,8 @@ class Pipeline:
                             release_date=version.publication_date,
                             changelog=changelog,
                             repository=extract_github_repository(mod.source_url),
+                            mod_downloads=mod.downloads,
+                            popularity_rank=index,
                         )
                     )
         finally:
@@ -1459,6 +1456,8 @@ def _release_from_candidate(candidate: RecentSecurityFixCandidate) -> RecentFixR
         commit_url=candidate.commit_url,
         changed_files=candidate.changed_files,
         patches=[],
+        mod_downloads=candidate.mod_downloads,
+        popularity_rank=candidate.popularity_rank,
     )
 
 
@@ -2123,6 +2122,11 @@ def _recent_security_fix_events(
                     "release_date": candidate.release_date,
                     "category": candidate.category,
                     "confidence": candidate.confidence,
+                    "mod_downloads": candidate.mod_downloads,
+                    "modpack_presence_count": candidate.modpack_presence_count,
+                    "popularity_rank": candidate.popularity_rank,
+                    "popularity_score": candidate.popularity_score,
+                    "selection_reason": candidate.selection_reason,
                     "requires_manual_review": candidate.requires_manual_review,
                     "affected_modpacks_count": len(candidate.affected_modpacks),
                     "latest_affected_modpacks": latest_affected,

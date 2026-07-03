@@ -284,6 +284,11 @@ class RecentSecurityFixCandidate(BaseModel):
     public_exploit_information: str = "none"
     confidence: int
     category: str
+    mod_downloads: int = 0
+    modpack_presence_count: int = 0
+    popularity_rank: int | None = None
+    popularity_score: int = 0
+    selection_reason: str = ""
     affected_modpacks: list[AffectedModpack] = Field(default_factory=list)
     requires_manual_review: bool = True
     ai_provider: str | None = None

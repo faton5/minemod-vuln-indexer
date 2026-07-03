@@ -99,6 +99,7 @@ def _render_attention(candidates: list[dict[str, object]]) -> None:
             "priority",
             "mod_name",
             "risk_summary",
+            "popularity_summary",
             "ai_label",
             "ai_confidence",
             "modpack_status",

@@ -113,11 +113,12 @@ def _render_candidate_workspace(database: Path, row: dict[str, Any]) -> None:
     _render_badges(row)
     st.write(str(row.get("risk_summary") or "No summary available."))
 
-    cols = st.columns(4)
+    cols = st.columns(5)
     cols[0].metric("Version suspecte", _text(row.get("old_version")))
     cols[1].metric("Version corrigee", _text(row.get("fixed_version")))
     cols[2].metric("IA confidence", _text(row.get("ai_confidence"), fallback="n/a"))
     cols[3].metric("Score crawler", _text(row.get("confidence"), fallback="n/a"))
+    cols[4].metric("Popularite", _text(row.get("popularity_score"), fallback="0"))
 
     st.info(str(row.get("review_action") or "No action computed."))
 
@@ -165,6 +166,10 @@ def _render_evidence(row: dict[str, Any]) -> None:
         st.write(_text(row.get("fix_status")))
         st.write("**Modpacks**")
         st.write(_text(row.get("modpack_status")))
+        st.write("**Popularite du mod**")
+        st.write(_text(row.get("popularity_summary")))
+        st.write("**Pourquoi selectionne**")
+        st.write(_text(row.get("selection_reason"), fallback="No selection reason recorded."))
         st.write("**Minecraft / loader**")
         st.write(f"{_text(row.get('minecraft_version'))} / {_text(row.get('loader'))}")
 
@@ -286,6 +291,7 @@ def _render_all_candidates(rows: list[dict[str, Any]]) -> None:
                 "priority",
                 "mod_name",
                 "risk_summary",
+                "popularity_summary",
                 "ai_label",
                 "ai_confidence",
                 "modpack_status",
