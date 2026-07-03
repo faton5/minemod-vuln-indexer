@@ -18,6 +18,52 @@ class FakeDownloadResponse:
         return None
 
 
+class FakeCurseForgeSearchHttp:
+    def __init__(self) -> None:
+        self.search_params: list[dict[str, object]] = []
+
+    def get_json(
+        self,
+        path: str,
+        *,
+        params: dict[str, object] | None = None,
+    ) -> dict[str, object]:
+        if path == "/v1/categories":
+            return {"data": [{"slug": "mc-mods", "classId": 6}]}
+        if path == "/v1/mods/search":
+            self.search_params.append(dict(params or {}))
+            return {
+                "data": [
+                    {
+                        "id": 1,
+                        "name": "Huge Mod",
+                        "slug": "huge-mod",
+                        "downloadCount": 50_000_000,
+                    },
+                    {
+                        "id": 2,
+                        "name": "Large Mod",
+                        "slug": "large-mod",
+                        "downloadCount": 10_000_000,
+                    },
+                ]
+            }
+        raise AssertionError(f"unexpected path {path}")
+
+
+def test_recent_popular_curseforge_mods_start_from_total_downloads() -> None:
+    client = CurseForgeClient.__new__(CurseForgeClient)
+    fake_http = FakeCurseForgeSearchHttp()
+    client.http = fake_http
+    client._mod_cache = {}
+    client._file_cache = {}
+
+    mods = client.collect_recent_popular_mods(limit=2)
+
+    assert [mod.name for mod in mods] == ["Huge Mod", "Large Mod"]
+    assert fake_http.search_params[0]["sortField"] == 6
+
+
 def test_curseforge_modpack_release_resolves_exact_component_metadata(
     monkeypatch: MonkeyPatch,
 ) -> None:

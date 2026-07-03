@@ -82,25 +82,7 @@ class CurseForgeClient:
         return [self._mod_from_api(item) for item in self._search(class_id=class_id, limit=limit)]
 
     def collect_recent_popular_mods(self, *, limit: int) -> list[ModProject]:
-        class_id = self.resolve_class_id("mc-mods")
-        recent = self._search(
-            class_id=class_id,
-            limit=limit,
-            extra={"sortField": SORT_LAST_UPDATED},
-        )
-        popular_ids = {item.project_id for item in self.collect_mods(limit=limit * 2)}
-        prioritized = [
-            self._mod_from_api(item) for item in recent if int(item["id"]) in popular_ids
-        ]
-        fallback = [self._mod_from_api(item) for item in recent]
-        seen: set[int | str] = set()
-        merged = []
-        for item in [*prioritized, *fallback]:
-            if item.project_id in seen:
-                continue
-            seen.add(item.project_id)
-            merged.append(item)
-        return merged[:limit]
+        return self.collect_mods(limit=limit)
 
     def collect_modpacks(
         self,
