@@ -1,22 +1,12 @@
 # Roadmap
 
-## Near term
+This project is archived and has no active roadmap.
 
-- Respect GitHub rate-limit reset headers during repository and advisory lookup.
-- Deduplicate generated records before SQLite writes.
-- Improve manual review visibility in the dashboard.
-- Add owner-provided inventory auditing for local mod folders and manifests.
+The last implementation direction was:
 
-## Defensive lab
+- prioritize highly downloaded mods before investigating recent public fixes;
+- keep the workflow passive;
+- avoid server scanning, exploit execution and target discovery;
+- expose crawler decisions and AI triage in the local dashboard.
 
-- Add local-only validation plans for findings.
-- Store validation notes as manual review records.
-- Support safe checks for installed version, vulnerable configuration and fixed
-  release availability.
-
-## Explicitly not planned
-
-- Public Minecraft server scanning.
-- Target discovery.
-- Exploit mod generation.
-- Proof-of-concept payload automation against third-party systems.
+No further development is planned in this repository.

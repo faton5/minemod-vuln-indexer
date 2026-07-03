@@ -1,190 +1,124 @@
 # MineModVulnIndexer
 
-MineModVulnIndexer is a passive, open-source security and dependency
-analysis tool for Minecraft mods and modpacks.
+> Archived prototype. This repository is kept for reference only and is no
+> longer actively developed.
 
-## Objectives
+MineModVulnIndexer is a passive Python prototype for indexing Minecraft mod
+metadata, public security-fix signals, and exact modpack component versions.
 
-- Retrieve public CurseForge metadata.
-- Identify official source repositories.
-- Collect publicly documented CVEs, GHSAs and security fixes.
-- Correlate affected mod versions with public modpack releases.
-- Generate JSON, CSV and Markdown reports.
+## Scope
 
-## Safety scope
+The project only uses public metadata and local analysis.
 
-This project does not scan Minecraft servers, connect to multiplayer
-servers, execute proof-of-concepts or exploit third-party systems.
+It does not:
 
-It does not mirror or redistribute mod files.
+- scan Minecraft servers;
+- connect to multiplayer servers;
+- execute proof-of-concepts;
+- exploit third-party systems;
+- mirror or redistribute mod files.
 
 See `docs/SAFETY_SCOPE.md` and `docs/LOCAL_LAB.md` for the defensive local lab
-scope.
+scope that was used during development.
 
-## Status
+## What Was Implemented
 
-Initial development and API integration.
+- Modrinth and CurseForge provider clients.
+- CurseForge modpack manifest indexing.
+- Exact modpack component extraction with project IDs, file IDs, versions and hashes.
+- Public recent-fix hunting from changelogs, linked issues, PRs and commits.
+- Optional Gemini triage for candidate explanation.
+- Release-lag hunting prototypes.
+- A local read-only Streamlit dashboard.
+- JSON/CSV/Markdown report helpers.
 
-## Configuration
+## Current Status
 
-Modrinth is the primary provider and works without an API token.
+The project is not production-ready. The crawler can collect data, but the
+signal quality is inconsistent and too dependent on public changelog wording,
+repository metadata, API availability and exact modpack manifests.
 
-```env
-MODRINTH_ENABLED=true
-MODRINTH_BASE_URL=https://api.modrinth.com/v2
-MODRINTH_CONTACT_EMAIL=
-MODRINTH_REQUESTS_PER_MINUTE=120
+The last validated workflow prioritized highly downloaded mods first, then
+looked for recent public fixes and correlated the previous version with indexed
+modpacks. In the final crawl, the system produced candidates, but no actionable
+exposure was confirmed.
 
-CURSEFORGE_ENABLED=auto
-CURSEFORGE_API_KEY=
-CURSEFORGE_BASE_URL=https://api.curseforge.com
-
-GITHUB_TOKEN=
-NVD_API_KEY=
-
-PROVIDER_PRIORITY=modrinth,curseforge
-```
-
-`CURSEFORGE_ENABLED=auto` enables CurseForge only when `CURSEFORGE_API_KEY`
-is configured. If the key is missing, the crawler logs that CurseForge is
-disabled and continues with Modrinth.
-
-## CLI
-
-```bash
-minemod-audit providers status
-minemod-audit collect-mods --provider modrinth --limit 20
-minemod-audit collect-modpacks --provider modrinth --limit 100
-minemod-audit collect-mods --provider all --limit 20
-minemod-audit run --providers modrinth
-minemod-audit run --providers all
-minemod-audit targeted-run --limit-modpacks 20 --top 3 --per-term 5
-minemod-audit index-curseforge-packs --limit 200 --releases 3
-minemod-audit build-canonical-mods
-minemod-audit analyze-release-diffs --top-libraries 50
-minemod-audit hunt-release-lag
-minemod-audit hunt-recent-security-fixes --provider all --updated-within-days 14 --popular-mods 100 --popular-modpacks 200 --top 20
-minemod-audit inspect-fix --candidate-id <id>
-minemod-audit dashboard
-```
-
-Example provider status:
-
-```text
-Provider     Status      Priority Reason
-Modrinth     enabled     1        Public API available
-CurseForge   disabled    2        API key not configured
-GitHub       enabled     -        Token configured
-NVD          enabled     -        API key configured
-```
-
-## Known limits
-
-Modrinth and CurseForge do not expose identical catalogs. A project can exist
-on one platform but not the other, or expose different metadata. MineModVulnIndexer
-keeps provider IDs and raw metadata so conflicts can be reviewed instead of
-silently overwritten.
-
-## Targeted vulnerability discovery
-
-For practical review, prefer the targeted workflow over broad crawling:
-
-```bash
-minemod-audit targeted-run --limit-modpacks 20 --top 3 --per-term 5
-```
-
-This indexes popular modpacks, ranks the mods that appear most often as
-dependencies, fetches their detailed provider metadata, resolves official
-GitHub repositories when possible, then searches public GitHub issues for
-security terms such as CVE, GHSA, vulnerability, exploit, dupe and server
-crash.
-
-Signals found from GitHub issues are stored as candidate vulnerabilities. They
-require manual review until an official advisory or reliable affected-version
-range is available.
-
-## Release lag hunting
-
-Release lag hunting is an independent passive workflow for finding modpacks that
-still ship a previous library release after a later release appears to fix a
-logic or security-sensitive bug.
-
-```bash
-minemod-audit index-curseforge-packs --limit 200 --releases 3
-minemod-audit build-canonical-mods
-minemod-audit analyze-release-diffs --top-libraries 50
-minemod-audit hunt-release-lag
-```
-
-The workflow uses CurseForge modpack manifests as the primary source for exact
-`projectID` and `fileID` component evidence. It builds canonical mod identities
-around normalized GitHub repositories when possible, then ranks libraries by the
-number of indexed modpack releases that contain them.
-
-Diff analysis compares consecutive release tags without pre-filtering commits by
-message text. It keeps changed files and relevant patch sections, and prioritizes
-server-trust boundaries such as packets, NBT, inventories, permissions, session
-state and server-side reconstruction. Findings are stored in
-`release_lag_findings` and exported to `output/release_lag_findings.json`.
-
-## Recent security fix hunting
-
-This workflow looks for recent public changelog fixes in popular mods, then
-checks whether indexed modpacks still use the previous release.
-
-```bash
-minemod-audit hunt-recent-security-fixes \
-  --provider all \
-  --updated-within-days 14 \
-  --popular-mods 100 \
-  --popular-modpacks 200 \
-  --top 20
-```
-
-The command reads `CURSEFORGE_API_KEY` only from the local `.env` file and tests
-the CurseForge connection before crawling. On success it prints only
-`CurseForge: enabled` for that check.
-
-It searches changelogs for public fix wording around duplication, packet
-validation, NBT, permission bypasses, ownership, distance and server-side trust
-boundaries. Linked public PRs, issues or commits are used as evidence when
-referenced. Results are exported to
-`output/recent_security_fix_candidates.json`.
-
-Inspect one candidate:
-
-```bash
-minemod-audit inspect-fix --candidate-id <id>
-```
-
-## Local dashboard
-
-The local dashboard is a read-only Streamlit interface for inspecting the SQLite
-database created by the crawler. It does not start crawler jobs, does not call
-external APIs on page load, and opens on `127.0.0.1` by default.
-
-Install dependencies and launch:
+## Setup
 
 ```bash
 uv sync --extra dev
+```
+
+Create a local `.env` file if you want to run the archived prototype:
+
+```env
+MODRINTH_ENABLED=true
+CURSEFORGE_ENABLED=true
+CURSEFORGE_API_KEY=
+GITHUB_TOKEN=
+GEMINI_API_KEY=
+GEMINI_AI_ENABLED=false
+```
+
+Do not commit `.env`. API keys are intentionally ignored by Git.
+
+## Useful Commands
+
+```bash
+minemod-audit providers status
+minemod-audit collect-mods --provider all --limit 20
+minemod-audit collect-modpacks --provider modrinth --limit 100
+minemod-audit index-curseforge-packs --limit 200 --releases 3
+minemod-audit hunt-recent-security-fixes --provider all --updated-within-days 14 --popular-mods 200 --popular-modpacks 200 --top 50 --ai
 minemod-audit dashboard --database ./data/minemod.sqlite
 ```
 
-Direct Streamlit launch is also supported:
+Dashboard:
 
 ```bash
 streamlit run dashboard/app.py
 ```
 
-Dashboard pages:
+## Dashboard Pages
 
-- Overview: index counts, vulnerability charts, provider distribution and last run.
-- Mods: searchable project table with provider, loader and Minecraft filters.
-- Vulnerabilities: confirmed, candidate and unclear records remain visually separate.
-- Modpacks: indexed packs, releases and selected release details.
-- Findings: exact vulnerable-version matches with CSV, JSON and Markdown exports.
-- Manual Review: unresolved repositories, non-comparable versions and provider conflicts.
-- Runs: stored execution history when run records are available.
+- `Overview`: high-level counts, crawl status and AI usage.
+- `Vulnerabilities`: candidate detail, public evidence, AI verdicts, modpack exposure and structured crawler logs.
+- `Mods`: indexed mods.
+- `Modpacks`: indexed modpacks and releases.
+- `AI`: Gemini cache and candidate annotations.
 
-GitHub Pages remains the static public project page. The Streamlit dashboard is
-the local dynamic viewer for SQLite data.
+## Repository Layout
+
+```text
+src/minemod_audit/       Python package and CLI
+dashboard/               Streamlit read-only dashboard
+tests/                   Unit and integration tests
+docs/                    Safety and lab notes
+examples/lab/            Local lab notes
+index.html               Static GitHub Pages landing page
+```
+
+Generated local data is intentionally ignored:
+
+```text
+data/
+logs/
+cache/
+output/
+.env
+```
+
+## Verification
+
+The final cleanup was validated with:
+
+```bash
+python -m ruff format src dashboard tests
+python -m ruff check src dashboard tests
+python -m mypy src dashboard
+python -m pytest -q
+```
+
+## License
+
+MIT

@@ -248,12 +248,12 @@
     <main class="page">
       <section class="hero" aria-labelledby="title">
         <div>
-          <p class="eyebrow">Passive Minecraft mod security analysis</p>
+          <p class="eyebrow">Archived passive analysis prototype</p>
           <h1 id="title">MineMod VulnIndexer</h1>
           <p class="summary">
-            MineModVulnIndexer retrieves public CurseForge metadata, resolves official
-            source repositories, and correlates documented security fixes with modpack
-            releases.
+            MineModVulnIndexer was a passive Python prototype for indexing public
+            Minecraft mod metadata, recent public fix signals, and exact modpack
+            component versions. The repository is archived and kept for reference only.
           </p>
           <div class="actions" aria-label="Project links">
             <a class="button primary" href="https://github.com/faton5/minemod-vuln-indexer">
@@ -270,24 +270,24 @@
               <span class="dot"></span>
               <span class="dot"></span>
             </div>
-            <pre><code>$ minemod-audit run --limit-mods 20
-collecting CurseForge metadata
-resolving source repositories
-indexing public modpack manifests
-writing JSON, CSV and Markdown reports</code></pre>
+            <pre><code>$ minemod-audit hunt-recent-security-fixes --provider all
+CurseForge: enabled
+indexing popular mods by total downloads
+checking public changelogs and fix evidence
+writing local SQLite records for review</code></pre>
           </div>
         </div>
       </section>
 
       <div class="sections">
         <section class="section" aria-labelledby="objectives">
-          <h2 id="objectives">Objectives</h2>
+          <h2 id="objectives">What It Did</h2>
           <ul>
-            <li>Retrieve public CurseForge metadata.</li>
+            <li>Retrieve public CurseForge and Modrinth metadata.</li>
             <li>Identify official source repositories.</li>
-            <li>Collect publicly documented CVEs, GHSAs and security fixes.</li>
-            <li>Correlate affected mod versions with public modpack releases.</li>
-            <li>Generate JSON, CSV and Markdown reports.</li>
+            <li>Collect public changelog, issue, PR and commit signals.</li>
+            <li>Correlate previous mod releases with indexed modpack components.</li>
+            <li>Display local SQLite results in a read-only Streamlit dashboard.</li>
           </ul>
         </section>
 
@@ -303,8 +303,8 @@ writing JSON, CSV and Markdown reports</code></pre>
         <section class="section" aria-labelledby="status">
           <h2 id="status">Status</h2>
           <p>
-            Initial development and API integration. The current implementation is a
-            passive MVP designed for local API-key based collection and report generation.
+            Archived. The final prototype could crawl and triage public metadata, but
+            signal quality was inconsistent and no production-ready workflow was reached.
           </p>
         </section>
       </div>

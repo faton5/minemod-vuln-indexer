@@ -28,4 +28,4 @@ def test_dashboard_pages_load_with_fixture_database(
 
 def test_legacy_dashboard_pages_are_not_in_streamlit_navigation() -> None:
     assert len(list(Path("dashboard/pages").glob("*.py"))) == 4
-    assert list(Path("dashboard/legacy_pages").glob("*.py"))
+    assert not list(Path("dashboard/legacy_pages").glob("*.py"))
